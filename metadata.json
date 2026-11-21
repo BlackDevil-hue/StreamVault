@@ -1,0 +1,6 @@
+{
+  "name": "StreamVault",
+  "description": "Smart Android video downloader with quality detection, resumable background downloads, download history, and built-in Media3 ExoPlayer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">StreamVault</string>
+    <string name="notification_channel_downloads_name">Video Downloads</string>
+    <string name="notification_channel_downloads_desc">Progress and status notifications for active video downloads</string>
+    <string name="cancel_download">Cancel</string>
+    <string name="pause_download">Pause</string>
+    <string name="share_video_chooser">Share video via</string>
+</resources>
