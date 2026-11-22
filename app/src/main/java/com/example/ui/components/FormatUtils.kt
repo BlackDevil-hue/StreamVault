@@ -16,6 +16,11 @@ object FormatUtils {
         return String.format(Locale.US, "%.2f GB", gb)
     }
 
+    fun formatProgressBytes(bytes: Long): String {
+        if (bytes <= 0L) return "0 B"
+        return formatBytes(bytes)
+    }
+
     fun formatSpeed(bytesPerSec: Long): String {
         if (bytesPerSec <= 0L) return "0 KB/s"
         return "${formatBytes(bytesPerSec)}/s"

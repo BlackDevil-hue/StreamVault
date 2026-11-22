@@ -68,7 +68,13 @@ class DownloadNotificationHelper @Inject constructor(
         return NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setContentTitle(title)
-            .setContentText(if (indeterminate) "Starting download..." else "$progressPercent% • $speedText")
+            .setContentText(
+                if (indeterminate) {
+                    speedText.ifBlank { "Starting download..." }
+                } else {
+                    "$progressPercent% • $speedText"
+                }
+            )
             .setProgress(100, progressPercent.coerceIn(0, 100), indeterminate)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -89,12 +95,21 @@ class DownloadNotificationHelper @Inject constructor(
     fun notifyPaused(downloadId: String, title: String, progressPercent: Int) {
         if (!hasNotificationPermission()) return
         ensureChannel()
+        val openIntent = PendingIntent.getActivity(
+            context,
+            pausedNotificationId(downloadId),
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setContentTitle(title)
             .setContentText("Paused • $progressPercent% complete")
             .setProgress(100, progressPercent.coerceIn(0, 100), false)
             .setOnlyAlertOnce(true)
+            .setContentIntent(openIntent)
             .addAction(
                 android.R.drawable.ic_media_play,
                 "Resume",
@@ -115,6 +130,7 @@ class DownloadNotificationHelper @Inject constructor(
         NotificationManagerCompat.from(context).apply {
             cancel(downloadId.hashCode())
             cancel(pausedNotificationId(downloadId))
+            cancel(failedNotificationId(downloadId))
         }
     }
 

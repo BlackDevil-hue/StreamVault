@@ -16,12 +16,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.History
@@ -40,14 +41,18 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -61,6 +66,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -73,6 +79,7 @@ import com.example.ui.components.EmptyStatePanel
 import com.example.ui.components.FormatUtils
 import com.example.ui.components.MediaThumbnail
 import com.example.ui.components.QualityBadge
+import com.example.ui.components.VaultAmbientBackground
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -91,113 +98,140 @@ fun HistoryScreen(
         viewModel.messages.collect { message -> snackbarHostState.showSnackbar(message) }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("Download History")
-                        Text(
-                            text = "${uiState.items.size} saved files",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background
-                )
-            )
-        },
-        snackbarHost = { SnackbarHost(snackbarHostState) }
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding),
-            contentAlignment = Alignment.TopCenter
-        ) {
-            Column(
-                modifier = Modifier
-                    .widthIn(max = 1280.dp)
-                    .fillMaxSize()
-            ) {
-                // Search & Filter Bar
-                OutlinedTextField(
-                    value = uiState.searchQuery,
-                    onValueChange = viewModel::onSearchQueryChanged,
-                    placeholder = { Text("Search downloads by title or format...") },
-                    leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .widthIn(max = 760.dp)
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp)
-                        .testTag("history_search_input")
-                )
-
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(HistoryFilter.entries) { filter ->
-                        FilterChip(
-                            selected = uiState.selectedFilter == filter,
-                            onClick = { viewModel.selectFilter(filter) },
-                            label = { Text(filter.label) },
-                            modifier = Modifier.testTag("history_filter_${filter.name}")
-                        )
-                    }
-                }
-
-                if (uiState.items.isEmpty()) {
-                    EmptyStatePanel(
-                        icon = Icons.Rounded.History,
-                        title = if (uiState.searchQuery.isBlank()) "No Saved Videos Yet" else "No Matching Videos",
-                        subtitle = if (uiState.searchQuery.isBlank()) {
-                            "Completed downloads appear here with instant offline playback, sharing, and file details."
-                        } else {
-                            "Try clearing your search or switching quality filters."
-                        },
-                        actionLabel = if (uiState.searchQuery.isBlank()) "Download a Video" else null,
-                        onAction = if (uiState.searchQuery.isBlank()) onGoToHome else null,
-                        modifier = Modifier.widthIn(max = 560.dp).align(Alignment.CenterHorizontally)
-                    )
-                } else {
-                    LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 420.dp),
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        gridItems(uiState.items, key = { it.id }) { item ->
-                            HistoryItemCard(
-                                item = item,
-                                onPlay = { onPlayVideo(item.id) },
-                                onShare = {
-                                    val shareIntent = viewModel.buildShareIntent(item)
-                                    if (shareIntent != null) {
-                                        context.startActivity(Intent.createChooser(shareIntent, "Share video"))
-                                    } else {
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar("Video file could not be found on device.")
-                                        }
-                                    }
-                                },
-                                onOpenLocation = {
-                                    val openIntent = viewModel.buildOpenLocationIntent(item)
-                                    val opened = runCatching { context.startActivity(openIntent) }.isSuccess
-                                    if (!opened) {
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar("Saved at: ${item.localPath ?: "Downloads/StreamVault"}")
-                                        }
-                                    }
-                                },
-                                onShowDetails = { viewModel.openDetails(item) },
-                                onDelete = { viewModel.requestDelete(item) }
+    VaultAmbientBackground {
+        Scaffold(
+            containerColor = Color.Transparent,
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text("Download History")
+                            Text(
+                                text = "${uiState.items.size} saved files",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color.Transparent
+                    )
+                )
+            },
+            snackbarHost = { SnackbarHost(snackbarHostState) }
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+                contentAlignment = Alignment.TopCenter
+            ) {
+                Column(
+                    modifier = Modifier
+                        .widthIn(max = 1280.dp)
+                        .fillMaxSize()
+                ) {
+                    // Search & Filter Bar
+                    OutlinedTextField(
+                        value = uiState.searchQuery,
+                        onValueChange = viewModel::onSearchQueryChanged,
+                        placeholder = { Text("Search downloads by title or format...") },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Rounded.Search,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        },
+                        trailingIcon = {
+                            if (uiState.searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { viewModel.onSearchQueryChanged("") }) {
+                                    Icon(Icons.Rounded.Clear, contentDescription = "Clear search")
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(16.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainer
+                        ),
+                        modifier = Modifier
+                            .widthIn(max = 760.dp)
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                            .testTag("history_search_input")
+                    )
+
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(HistoryFilter.entries) { filter ->
+                            FilterChip(
+                                selected = uiState.selectedFilter == filter,
+                                onClick = { viewModel.selectFilter(filter) },
+                                label = { Text(filter.label) },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                ),
+                                modifier = Modifier.testTag("history_filter_${filter.name}")
+                            )
+                        }
+                    }
+
+                    if (uiState.items.isEmpty()) {
+                        EmptyStatePanel(
+                            icon = Icons.Rounded.History,
+                            title = if (uiState.searchQuery.isBlank()) "No Saved Videos Yet" else "No Matching Videos",
+                            subtitle = if (uiState.searchQuery.isBlank()) {
+                                "Completed downloads appear here with instant offline playback, sharing, and file details."
+                            } else {
+                                "Try clearing your search or switching quality filters."
+                            },
+                            actionLabel = if (uiState.searchQuery.isBlank()) "Download a Video" else null,
+                            onAction = if (uiState.searchQuery.isBlank()) onGoToHome else null,
+                            modifier = Modifier
+                                .widthIn(max = 560.dp)
+                                .align(Alignment.CenterHorizontally)
+                        )
+                    } else {
+                        LazyVerticalGrid(
+                            columns = GridCells.Adaptive(minSize = 420.dp),
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            gridItems(uiState.items, key = { it.id }) { item ->
+                                HistoryItemCard(
+                                    item = item,
+                                    onPlay = { onPlayVideo(item.id) },
+                                    onShare = {
+                                        val shareIntent = viewModel.buildShareIntent(item)
+                                        if (shareIntent != null) {
+                                            context.startActivity(Intent.createChooser(shareIntent, "Share video"))
+                                        } else {
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar("Video file could not be found on device.")
+                                            }
+                                        }
+                                    },
+                                    onOpenLocation = {
+                                        val openIntent = viewModel.buildOpenLocationIntent(item)
+                                        val opened = runCatching { context.startActivity(openIntent) }.isSuccess
+                                        if (!opened) {
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar("Saved at: ${item.localPath ?: "Downloads/StreamVault"}")
+                                            }
+                                        }
+                                    },
+                                    onShowDetails = { viewModel.openDetails(item) },
+                                    onDelete = { viewModel.requestDelete(item) }
+                                )
+                            }
                         }
                     }
                 }
@@ -212,22 +246,48 @@ fun HistoryScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
                     text = "File Details",
                     style = MaterialTheme.typography.headlineSmall
                 )
-                DetailRow("Title", detailItem.title)
-                DetailRow("File Name", detailItem.fileName)
-                DetailRow("Resolution", detailItem.resolutionLabel)
-                DetailRow("Format", "${detailItem.format} (${detailItem.mimeType})")
-                DetailRow("File Size", FormatUtils.formatBytes(detailItem.totalBytes))
-                detailItem.durationMs?.let { DetailRow("Duration", FormatUtils.formatDuration(it)) }
-                DetailRow("Downloaded", FormatUtils.formatDate(detailItem.completedAt ?: detailItem.createdAt))
-                DetailRow("Location", detailItem.localPath ?: detailItem.localUri ?: "Downloads/StreamVault")
-                DetailRow("Source URL", detailItem.sourceUrl)
-                detailItem.sha256?.let { DetailRow("SHA-256", it.take(24) + "...") }
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        DetailRow("Title", detailItem.title)
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                        DetailRow("File Name", detailItem.fileName)
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                        DetailRow("Resolution", detailItem.resolutionLabel)
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                        DetailRow("Format", "${detailItem.format} (${detailItem.mimeType})")
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                        DetailRow("File Size", FormatUtils.formatBytes(detailItem.totalBytes))
+                        detailItem.durationMs?.let {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                            DetailRow("Duration", FormatUtils.formatDuration(it))
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                        DetailRow("Downloaded", FormatUtils.formatDate(detailItem.completedAt ?: detailItem.createdAt))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                        DetailRow("Location", detailItem.localPath ?: detailItem.localUri ?: "Downloads/StreamVault")
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                        DetailRow("Source URL", detailItem.sourceUrl)
+                        detailItem.sha256?.let {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                            DetailRow("SHA-256", it.take(24) + "...")
+                        }
+                    }
+                }
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }
@@ -292,7 +352,7 @@ private fun HistoryItemCard(
             .testTag("history_card_${item.id}"),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        shape = RoundedCornerShape(18.dp)
+        shape = RoundedCornerShape(20.dp)
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(
@@ -304,11 +364,12 @@ private fun HistoryItemCard(
                     isAudioOnly = item.isAudioOnly,
                     contentDescription = item.title,
                     durationMs = item.durationMs,
-                    modifier = Modifier.size(width = 104.dp, height = 68.dp)
+                    showPlayBadge = true,
+                    modifier = Modifier.size(width = 112.dp, height = 70.dp)
                 )
                 Column(
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     Text(
                         text = item.title,
@@ -333,7 +394,7 @@ private fun HistoryItemCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -345,7 +406,7 @@ private fun HistoryItemCard(
                     modifier = Modifier
                         .height(48.dp)
                         .testTag("history_play_${item.id}"),
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(14.dp)
                 ) {
                     Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))

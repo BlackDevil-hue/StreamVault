@@ -131,9 +131,7 @@ class DownloadRepositoryImpl @Inject constructor(
             isAudioOnly = option.isAudioOnly,
             status = initialStatus.name,
             bytesDownloaded = 0L,
-            // yt-dlp can select separate adaptive tracks; its metadata estimate is not the
-            // final download total. Start unknown and let live progress provide the size.
-            totalBytes = if (isYtDlp) 0L else estimated,
+            totalBytes = estimated,
             speedBytesPerSec = 0L,
             etaSeconds = 0L,
             supportsRange = option.supportsRange,
@@ -162,6 +160,7 @@ class DownloadRepositoryImpl @Inject constructor(
         entity.workRequestId?.let { workId ->
             runCatching { workManager.cancelWorkById(UUID.fromString(workId)) }
         }
+        notificationHelper.cancelProgress(id)
     }
 
     override suspend fun resumeDownload(id: String) {
@@ -196,14 +195,14 @@ class DownloadRepositoryImpl @Inject constructor(
     }
 
     override suspend fun pauseAll() {
-        val active = downloadDao.getDownloading() + downloadDao.getQueued()
+        val active = downloadDao.getQueued() + downloadDao.getDownloading()
         active.forEach { entity ->
             pauseDownload(entity.id)
         }
     }
 
     override suspend fun resumeAll() {
-        val all = downloadDao.getQueued()
+        val all = downloadDao.getPaused() + downloadDao.getQueued()
         all.forEach { resumeDownload(it.id) }
     }
 

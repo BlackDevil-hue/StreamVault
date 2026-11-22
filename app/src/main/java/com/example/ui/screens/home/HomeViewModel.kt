@@ -2,12 +2,14 @@ package com.example.ui.screens.home
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.network.YouTubeExtractor
+import com.example.domain.model.AppSettings
 import com.example.domain.model.DownloadTask
 import com.example.domain.model.VideoAnalysisResult
 import com.example.domain.repository.DownloadRepository
+import com.example.domain.repository.SettingsRepository
 import com.example.domain.repository.VideoAnalyzerRepository
 import com.example.domain.source.ExtractionOutcome
-import com.example.data.network.YouTubeExtractor
 import com.example.ui.state.AnalysisSessionCache
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -27,9 +29,10 @@ data class HomeUiState(
     val errorMessage: String? = null,
     val activeDownloads: List<DownloadTask> = emptyList(),
     val recentDownloads: List<DownloadTask> = emptyList(),
+    val notificationPromptDismissed: Boolean = false,
     val batchInput: String = "",
     val playlistStartIndex: String = "1",
-    val playlistEndIndex: String = "20",
+    val playlistEndIndex: String = "50",
     val batchItems: List<BatchVideoItem> = emptyList(),
     val isAnalyzingBatch: Boolean = false,
     val isQueueingBatch: Boolean = false,
@@ -52,6 +55,7 @@ sealed interface HomeNavigationEvent {
 class HomeViewModel @Inject constructor(
     private val analyzerRepository: VideoAnalyzerRepository,
     private val downloadRepository: DownloadRepository,
+    private val settingsRepository: SettingsRepository,
     private val analysisCache: AnalysisSessionCache,
     private val youtubeExtractor: YouTubeExtractor
 ) : ViewModel() {
@@ -73,9 +77,12 @@ class HomeViewModel @Inject constructor(
         errorFlow,
         downloadRepository.activeAndQueuedDownloads,
         downloadRepository.recentDownloads,
-        batchFlow
+        batchFlow,
+        settingsRepository.settings
     ) { values ->
         @Suppress("UNCHECKED_CAST")
+        val batch = values[6] as HomeUiState
+        val settings = values[7] as AppSettings
         HomeUiState(
             urlInput = values[0] as String,
             clipboardDetectedUrl = values[1] as String?,
@@ -83,19 +90,33 @@ class HomeViewModel @Inject constructor(
             errorMessage = values[3] as String?,
             activeDownloads = values[4] as List<DownloadTask>,
             recentDownloads = values[5] as List<DownloadTask>,
-            batchInput = (values[6] as HomeUiState).batchInput,
-            playlistStartIndex = (values[6] as HomeUiState).playlistStartIndex,
-            playlistEndIndex = (values[6] as HomeUiState).playlistEndIndex,
-            batchItems = (values[6] as HomeUiState).batchItems,
-            isAnalyzingBatch = (values[6] as HomeUiState).isAnalyzingBatch,
-            isQueueingBatch = (values[6] as HomeUiState).isQueueingBatch,
-            batchMessage = (values[6] as HomeUiState).batchMessage
+            notificationPromptDismissed = settings.notificationPromptDismissed,
+            batchInput = batch.batchInput,
+            playlistStartIndex = batch.playlistStartIndex,
+            playlistEndIndex = batch.playlistEndIndex,
+            batchItems = batch.batchItems,
+            isAnalyzingBatch = batch.isAnalyzingBatch,
+            isQueueingBatch = batch.isQueueingBatch,
+            batchMessage = batch.batchMessage
         )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = HomeUiState()
     )
+
+    fun dismissNotificationPrompt() {
+        viewModelScope.launch {
+            settingsRepository.setNotificationPromptDismissed(true)
+        }
+    }
+
+    fun onNotificationPermissionGranted() {
+        viewModelScope.launch {
+            settingsRepository.setNotificationsEnabled(true)
+            settingsRepository.setNotificationPromptDismissed(true)
+        }
+    }
 
     fun onUrlChanged(newValue: String) {
         urlInputFlow.value = newValue
@@ -194,7 +215,7 @@ class HomeViewModel @Inject constructor(
             .map { it.value.trimEnd('.', ',', ';', '!', ')', ']', '}') }
             .filter { it.isNotBlank() }
             .distinct()
-            .take(20)
+            .take(50)
             .toList()
         if (urls.isEmpty()) {
             batchFlow.value = batchFlow.value.copy(batchMessage = "Paste one or more video links, one per line.")
@@ -214,22 +235,22 @@ class HomeViewModel @Inject constructor(
             return
         }
         val playlistStartIndex = enteredPlaylistStart.takeIf { it in 1..1_000_000 } ?: 1
-        val playlistEndIndex = enteredPlaylistEnd.takeIf { it in playlistStartIndex..1_000_000 } ?: 20
+        val playlistEndIndex = enteredPlaylistEnd.takeIf { it in playlistStartIndex..1_000_000 } ?: 50
 
         viewModelScope.launch {
             batchFlow.value = batchFlow.value.copy(
                 isAnalyzingBatch = true,
-                batchMessage = "Expanding playlist items $playlistStartIndex–$playlistEndIndex and analyzing up to 20 videos…",
+                batchMessage = "Expanding playlist items $playlistStartIndex–$playlistEndIndex and analyzing up to 50 videos…",
                 batchItems = urls.map { BatchVideoItem(it) }
             )
             var analyzedVideoCount = 0
             urls.forEach { url ->
                 val isPlaylist = youtubeExtractor.isPlaylistUrl(url)
-                val remaining = (20 - analyzedVideoCount).coerceAtLeast(0)
+                val remaining = (50 - analyzedVideoCount).coerceAtLeast(0)
                 if (remaining == 0) {
                     batchFlow.value = batchFlow.value.copy(
                         batchItems = batchFlow.value.batchItems.map {
-                            if (it.url == url) it.copy(error = "Batch limit reached (20 videos).") else it
+                            if (it.url == url) it.copy(error = "Batch limit reached (50 videos).") else it
                         }
                     )
                     return@forEach

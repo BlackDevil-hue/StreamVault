@@ -1,5 +1,6 @@
 package com.example.ui.theme
 
+import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -10,14 +11,43 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
 
 enum class ThemePreference {
     SYSTEM,
     DARK,
     LIGHT
+}
+
+@Immutable
+data class StreamVaultExtras(
+    val isDark: Boolean,
+    val warning: Color,
+    val heroScrimStart: Color,
+    val heroScrimEnd: Color,
+    val heroAccentBorder: Color,
+    val heroOnScrim: Color,
+    val heroOnScrimMuted: Color
+)
+
+val LocalStreamVaultExtras = staticCompositionLocalOf {
+    StreamVaultExtras(
+        isDark = true,
+        warning = AmberWarning,
+        heroScrimStart = MediaScrimDark.copy(alpha = 0.90f),
+        heroScrimEnd = MediaScrimDark.copy(alpha = 0.58f),
+        heroAccentBorder = ElectricCyan.copy(alpha = 0.45f),
+        heroOnScrim = MediaOverlayLightText,
+        heroOnScrimMuted = MediaOverlayMutedText
+    )
 }
 
 private val StreamVaultDarkColorScheme = darkColorScheme(
@@ -109,10 +139,32 @@ fun StreamVaultTheme(
         else -> StreamVaultLightColorScheme
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = StreamVaultTypography,
-        shapes = StreamVaultShapes,
-        content = content
+    val extras = StreamVaultExtras(
+        isDark = darkTheme,
+        warning = AmberWarning,
+        heroScrimStart = MediaScrimDark.copy(alpha = 0.90f),
+        heroScrimEnd = MediaScrimDark.copy(alpha = 0.56f),
+        heroAccentBorder = colorScheme.primary.copy(alpha = if (darkTheme) 0.42f else 0.35f),
+        heroOnScrim = MediaOverlayLightText,
+        heroOnScrimMuted = MediaOverlayMutedText
     )
+
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            val window = (view.context as? Activity)?.window
+            if (window != null) {
+                WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
+            }
+        }
+    }
+
+    CompositionLocalProvider(LocalStreamVaultExtras provides extras) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = StreamVaultTypography,
+            shapes = StreamVaultShapes,
+            content = content
+        )
+    }
 }

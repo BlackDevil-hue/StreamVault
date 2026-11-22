@@ -91,6 +91,8 @@ class ExampleRobolectricTest {
             sha256 = "deadbeef",
             resolutionLabel = "1080p Full HD",
             resolutionHeight = 1080,
+            format = "MP4",
+            mimeType = "video/mp4",
             durationMs = 12_000L,
             completedAt = 2000L
         )

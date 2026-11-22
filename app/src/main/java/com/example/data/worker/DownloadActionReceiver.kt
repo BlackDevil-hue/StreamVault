@@ -28,8 +28,9 @@ class DownloadActionReceiver : BroadcastReceiver() {
             try {
                 when (intent.action) {
                     ACTION_PAUSE -> {
+                        val latestProgress = downloadRepository.getDownloadById(downloadId)?.progressPercent ?: progress
                         downloadRepository.pauseDownload(downloadId)
-                        notificationHelper.notifyPaused(downloadId, title, progress)
+                        notificationHelper.notifyPaused(downloadId, title, latestProgress)
                     }
                     ACTION_RESUME -> {
                         downloadRepository.resumeDownload(downloadId)

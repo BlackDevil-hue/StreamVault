@@ -57,31 +57,45 @@ class VideoDownloadWorker @AssistedInject constructor(
         }
 
         val isYtDlpDownload = entity.streamUrl.startsWith("yt-dlp://")
-        if (isYtDlpDownload) {
-            // Clear estimates saved by older app versions before starting/retrying this transfer.
-            // The tracker repopulates size and bytes from yt-dlp's live stream output.
-            downloadDao.resetYtDlpProgress(downloadId)
+        val initialYtDlpBytes = if (isYtDlpDownload) {
+            storageManager.getYtDlpDownloadedBytes(downloadId)
+        } else {
+            0L
+        }
+        if (isYtDlpDownload && initialYtDlpBytes > 0L) {
+            downloadDao.updateYtDlpPausedProgress(downloadId, initialYtDlpBytes, DownloadStatus.DOWNLOADING.name)
         }
 
         val settings = preferencesDataStore.getCurrent()
         val notificationId = downloadId.hashCode()
+        val stagingFile = storageManager.getStagingFile(downloadId)
+        var existingBytes = if (stagingFile.exists()) stagingFile.length() else 0L
+        val resumedBytes = if (isYtDlpDownload) initialYtDlpBytes else existingBytes
+        val initialPct = if (entity.totalBytes > 0L && resumedBytes > 0L) {
+            ((resumedBytes * 100L) / entity.totalBytes).toInt().coerceIn(0, 99)
+        } else {
+            entity.reportedProgressPercent?.coerceIn(0, 99) ?: 0
+        }
+        val initialText = if (entity.totalBytes > 0L && resumedBytes > 0L) {
+            "${formatBytesSimple(resumedBytes)} / ${formatBytesSimple(entity.totalBytes)} • Resuming…"
+        } else {
+            "Connecting…"
+        }
 
+        notificationHelper.cancelProgress(downloadId)
         runCatching {
             setForeground(
                 createForegroundInfo(
                     notificationId = notificationId,
                     title = entity.title,
-                    percent = 0,
-                    speedText = "Connecting...",
-                    indeterminate = true
+                    percent = initialPct,
+                    speedText = initialText,
+                    indeterminate = entity.totalBytes <= 0L && initialPct <= 0
                 )
             )
         }
 
         downloadDao.updateStatus(downloadId, DownloadStatus.DOWNLOADING.name, null)
-
-        val stagingFile = storageManager.getStagingFile(downloadId)
-        var existingBytes = if (stagingFile.exists()) stagingFile.length() else 0L
 
         if (entity.totalBytes > 0L && existingBytes > 0L) {
             val remaining = (entity.totalBytes - existingBytes).coerceAtLeast(0L)
@@ -146,10 +160,12 @@ class VideoDownloadWorker @AssistedInject constructor(
                 }
                 val cookieFile = youtubeCookieProvider.attachCookies(request, inputUrl)
                 val lastProgressUpdate = AtomicLong(0L)
+                val lastReportedTotal = AtomicLong(entity.totalBytes.coerceAtLeast(0L))
                 val progressTracker = YtDlpProgressTracker(
-                    expectedBytes = 0L,
-                    initialDownloadedBytes = storageManager.getYtDlpDownloadedBytes(downloadId),
-                    initialProgressPercent = null
+                    expectedBytes = entity.totalBytes.coerceAtLeast(0L),
+                    initialDownloadedBytes = initialYtDlpBytes,
+                    initialProgressPercent = entity.reportedProgressPercent,
+                    fileLengthProvider = { path -> File(path).length() }
                 )
                 // CoroutineWorker.onStopped() is final. Watch its stopped flag separately so a
                 // blocking yt-dlp call can still be terminated when WorkManager pauses/cancels it.
@@ -160,33 +176,43 @@ class VideoDownloadWorker @AssistedInject constructor(
                 }
                 try {
                     YoutubeDL.getInstance().execute(request, downloadId) { progress, etaSeconds, outputLine ->
+                        if (isStopped) return@execute
                         val snapshot = progressTracker.update(progress, etaSeconds, outputLine)
                         val now = System.currentTimeMillis()
-                        if (now - lastProgressUpdate.get() >= 750L || progress >= 100f || snapshot.finalizing) {
+                        val discoveredNewTotal = snapshot.totalBytes > 0L && lastReportedTotal.get() != snapshot.totalBytes
+                        if (now - lastProgressUpdate.get() >= 750L || progress >= 100f || snapshot.finalizing || discoveredNewTotal) {
                             lastProgressUpdate.set(now)
+                            lastReportedTotal.set(snapshot.totalBytes)
                             runBlocking(Dispatchers.IO) {
+                                if (isStopped) return@runBlocking
                                 downloadDao.updateYtDlpProgress(
                                     id = downloadId,
                                     bytesDownloaded = snapshot.bytesDownloaded,
                                     totalBytes = snapshot.totalBytes,
                                     speed = snapshot.speedBytesPerSec,
                                     percent = snapshot.percent,
-                                    eta = snapshot.etaSeconds,
-                                    status = DownloadStatus.DOWNLOADING.name
+                                    eta = snapshot.etaSeconds
                                 )
-                                setForeground(
-                                    createForegroundInfo(
-                                        notificationId = notificationId,
-                                        title = entity.title,
-                                        percent = snapshot.percent,
-                                        speedText = when {
-                                            snapshot.finalizing -> "Finalizing media…"
-                                            snapshot.speedBytesPerSec > 0L -> "${formatBytesSimple(snapshot.speedBytesPerSec)}/s"
-                                            else -> "Waiting for stream…"
-                                        },
-                                        indeterminate = snapshot.totalBytes <= 0L
+                                runCatching {
+                                    setForeground(
+                                        createForegroundInfo(
+                                            notificationId = notificationId,
+                                            title = entity.title,
+                                            percent = snapshot.percent,
+                                            speedText = when {
+                                                snapshot.finalizing -> "Finalizing media…"
+                                                snapshot.totalBytes > 0L && snapshot.speedBytesPerSec > 0L ->
+                                                    "${formatBytesSimple(snapshot.bytesDownloaded)} / ${formatBytesSimple(snapshot.totalBytes)} • ${formatBytesSimple(snapshot.speedBytesPerSec)}/s"
+                                                snapshot.speedBytesPerSec > 0L ->
+                                                    "${formatBytesSimple(snapshot.bytesDownloaded)} • ${formatBytesSimple(snapshot.speedBytesPerSec)}/s"
+                                                snapshot.totalBytes > 0L ->
+                                                    "${formatBytesSimple(snapshot.bytesDownloaded)} / ${formatBytesSimple(snapshot.totalBytes)}"
+                                                else -> "Waiting for stream…"
+                                            },
+                                            indeterminate = snapshot.totalBytes <= 0L && snapshot.percent <= 0
+                                        )
                                     )
-                                )
+                                }
                             }
                         }
                     }
@@ -289,182 +315,215 @@ class VideoDownloadWorker @AssistedInject constructor(
                 existingBytes = 0L
             }
 
-            okHttpClient.newCall(requestBuilder.build()).execute().use { response ->
-                if (response.code in listOf(401, 403)) {
-                    val msg = "Access denied by server (HTTP ${response.code})."
-                    downloadDao.updateStatus(downloadId, DownloadStatus.FAILED.name, msg)
-                    notificationHelper.notifyFailed(downloadId, entity.title, msg, settings.notificationsEnabled)
-                    return@withContext Result.failure()
-                }
-                if (response.code == 416) {
-                    // Range not satisfiable -> restart from 0
-                    stagingFile.delete()
-                    existingBytes = 0L
-                    return@withContext Result.retry()
-                }
-                if (!response.isSuccessful) {
-                    val msg = "Server returned HTTP ${response.code}."
-                    if (response.code >= 500) {
+            val call = okHttpClient.newCall(requestBuilder.build())
+            val httpStopWatcher = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            httpStopWatcher.launch {
+                while (!isStopped) delay(100L)
+                call.cancel()
+            }
+            try {
+                call.execute().use { response ->
+                    if (response.code in listOf(401, 403)) {
+                        val msg = "Access denied by server (HTTP ${response.code})."
                         downloadDao.updateStatus(downloadId, DownloadStatus.FAILED.name, msg)
+                        notificationHelper.notifyFailed(downloadId, entity.title, msg, settings.notificationsEnabled)
+                        return@withContext Result.failure()
+                    }
+                    if (response.code == 416) {
+                        // Range not satisfiable -> restart from 0
+                        stagingFile.delete()
+                        existingBytes = 0L
                         return@withContext Result.retry()
                     }
-                    downloadDao.updateStatus(downloadId, DownloadStatus.FAILED.name, msg)
-                    notificationHelper.notifyFailed(downloadId, entity.title, msg, settings.notificationsEnabled)
-                    return@withContext Result.failure()
-                }
+                    if (!response.isSuccessful) {
+                        val msg = "Server returned HTTP ${response.code}."
+                        if (response.code >= 500) {
+                            downloadDao.updateStatus(downloadId, DownloadStatus.FAILED.name, msg)
+                            return@withContext Result.retry()
+                        }
+                        downloadDao.updateStatus(downloadId, DownloadStatus.FAILED.name, msg)
+                        notificationHelper.notifyFailed(downloadId, entity.title, msg, settings.notificationsEnabled)
+                        return@withContext Result.failure()
+                    }
 
-                val isPartial = response.code == 206
-                if (!isPartial && existingBytes > 0L) {
-                    // Server ignored Range and sent 200 OK full stream
-                    stagingFile.delete()
-                    existingBytes = 0L
-                }
+                    val isPartial = response.code == 206
+                    if (!isPartial && existingBytes > 0L) {
+                        // Server ignored Range and sent 200 OK full stream
+                        stagingFile.delete()
+                        existingBytes = 0L
+                    }
 
-                val body = response.body ?: throw IOException("Empty media stream response.")
-                val contentLength = body.contentLength()
-                val totalBytes = when {
-                    isPartial && contentLength > 0L -> existingBytes + contentLength
-                    contentLength > 0L -> contentLength
-                    entity.totalBytes > 0L -> entity.totalBytes
-                    else -> -1L
-                }
+                    val body = response.body ?: throw IOException("Empty media stream response.")
+                    val contentLength = body.contentLength()
+                    val totalFromRange = response.header("Content-Range")
+                        ?.substringAfter('/', "")
+                        ?.trim()
+                        ?.toLongOrNull()
+                        ?.takeIf { it > 0L }
+                    val totalBytes = when {
+                        isPartial && totalFromRange != null -> totalFromRange
+                        isPartial && contentLength > 0L -> existingBytes + contentLength
+                        contentLength > 0L -> contentLength
+                        entity.totalBytes > 0L -> entity.totalBytes
+                        else -> 0L
+                    }
 
-                if (totalBytes > 0L && !storageManager.hasEnoughStorage((totalBytes - existingBytes).coerceAtLeast(0L))) {
-                    val msg = "Insufficient storage space (${formatBytesSimple(totalBytes)} required)."
-                    downloadDao.updateStatus(downloadId, DownloadStatus.FAILED.name, msg)
-                    notificationHelper.notifyFailed(downloadId, entity.title, msg, settings.notificationsEnabled)
-                    return@withContext Result.failure()
-                }
+                    if (totalBytes > 0L && !storageManager.hasEnoughStorage((totalBytes - existingBytes).coerceAtLeast(0L))) {
+                        val msg = "Insufficient storage space (${formatBytesSimple(totalBytes)} required)."
+                        downloadDao.updateStatus(downloadId, DownloadStatus.FAILED.name, msg)
+                        notificationHelper.notifyFailed(downloadId, entity.title, msg, settings.notificationsEnabled)
+                        return@withContext Result.failure()
+                    }
 
-                var downloaded = existingBytes
-                var windowBytes = 0L
-                var lastUpdateMs = System.currentTimeMillis()
-                var lastNotifyMs = 0L
-                val buffer = ByteArray(32 * 1024)
+                    downloadDao.updateActiveProgress(
+                        id = downloadId,
+                        bytesDownloaded = existingBytes,
+                        totalBytes = if (totalBytes > 0L) totalBytes.coerceAtLeast(existingBytes) else 0L,
+                        speed = 0L,
+                        eta = 0L
+                    )
 
-                FileOutputStream(stagingFile, isPartial).use { output ->
-                    body.byteStream().use { input ->
-                        while (true) {
-                            if (isStopped) {
-                                // Check whether user paused or cancelled
-                                val latest = downloadDao.getById(downloadId)
-                                if (latest?.status == DownloadStatus.CANCELLED.name) {
-                                    stagingFile.delete()
-                                } else if (latest?.status != DownloadStatus.PAUSED.name) {
-                                    downloadDao.updateProgress(
+                    var downloaded = existingBytes
+                    var windowBytes = 0L
+                    var lastUpdateMs = System.currentTimeMillis()
+                    var lastNotifyMs = 0L
+                    val buffer = ByteArray(32 * 1024)
+
+                    FileOutputStream(stagingFile, isPartial).use { output ->
+                        body.byteStream().use { input ->
+                            while (true) {
+                                if (isStopped) {
+                                    output.flush()
+                                    preserveStoppedDownload(downloadId, entity, stagingFile)
+                                    return@withContext Result.success()
+                                }
+
+                                val read = input.read(buffer)
+                                if (read == -1) break
+
+                                output.write(buffer, 0, read)
+                                downloaded += read
+                                windowBytes += read
+
+                                val now = System.currentTimeMillis()
+                                val elapsedMs = now - lastUpdateMs
+                                if (elapsedMs >= 500L && !isStopped) {
+                                    val speedBps = (windowBytes * 1000L) / elapsedMs.coerceAtLeast(1L)
+                                    val remaining = if (totalBytes > downloaded) totalBytes - downloaded else 0L
+                                    val etaSec = if (speedBps > 0L && remaining > 0L) remaining / speedBps else 0L
+
+                                    downloadDao.updateActiveProgress(
                                         id = downloadId,
                                         bytesDownloaded = downloaded,
-                                        totalBytes = totalBytes.coerceAtLeast(downloaded),
-                                        speed = 0L,
-                                        eta = 0L,
-                                        status = DownloadStatus.PAUSED.name
+                                        totalBytes = if (totalBytes > 0L) totalBytes.coerceAtLeast(downloaded) else 0L,
+                                        speed = speedBps,
+                                        eta = etaSec
                                     )
-                                }
-                                return@withContext Result.success()
-                            }
 
-                            val read = input.read(buffer)
-                            if (read == -1) break
-
-                            output.write(buffer, 0, read)
-                            downloaded += read
-                            windowBytes += read
-
-                            val now = System.currentTimeMillis()
-                            val elapsedMs = now - lastUpdateMs
-                            if (elapsedMs >= 500L) {
-                                val speedBps = (windowBytes * 1000L) / elapsedMs.coerceAtLeast(1L)
-                                val remaining = if (totalBytes > downloaded) totalBytes - downloaded else 0L
-                                val etaSec = if (speedBps > 0L && remaining > 0L) remaining / speedBps else 0L
-
-                                downloadDao.updateProgress(
-                                    id = downloadId,
-                                    bytesDownloaded = downloaded,
-                                    totalBytes = totalBytes.coerceAtLeast(downloaded),
-                                    speed = speedBps,
-                                    eta = etaSec,
-                                    status = DownloadStatus.DOWNLOADING.name
-                                )
-
-                                if (now - lastNotifyMs >= 1000L) {
-                                    val pct = if (totalBytes > 0L) ((downloaded * 100L) / totalBytes).toInt() else 0
-                                    runCatching {
-                                        setForeground(
-                                            createForegroundInfo(
-                                                notificationId = notificationId,
-                                                title = entity.title,
-                                                percent = pct,
-                                                speedText = "${formatBytesSimple(speedBps)}/s",
-                                                indeterminate = totalBytes <= 0L
+                                    if (now - lastNotifyMs >= 1000L && !isStopped) {
+                                        val pct = if (totalBytes > 0L) {
+                                            ((downloaded * 100L) / totalBytes).toInt().coerceIn(0, 100)
+                                        } else {
+                                            0
+                                        }
+                                        val speedLabel = if (totalBytes > 0L) {
+                                            "${formatBytesSimple(downloaded)} / ${formatBytesSimple(totalBytes)} • ${formatBytesSimple(speedBps)}/s"
+                                        } else {
+                                            "${formatBytesSimple(downloaded)} • ${formatBytesSimple(speedBps)}/s"
+                                        }
+                                        runCatching {
+                                            setForeground(
+                                                createForegroundInfo(
+                                                    notificationId = notificationId,
+                                                    title = entity.title,
+                                                    percent = pct,
+                                                    speedText = speedLabel,
+                                                    indeterminate = totalBytes <= 0L
+                                                )
                                             )
-                                        )
+                                        }
+                                        lastNotifyMs = now
                                     }
-                                    lastNotifyMs = now
-                                }
 
-                                windowBytes = 0L
-                                lastUpdateMs = now
+                                    windowBytes = 0L
+                                    lastUpdateMs = now
+                                }
                             }
                         }
+                        output.flush()
                     }
-                    output.flush()
-                }
 
-                // File integrity verification
-                val actualLen = stagingFile.length()
-                if (actualLen <= 0L) {
-                    throw IOException("Downloaded file is empty.")
-                }
-                if (totalBytes > 0L && actualLen < totalBytes) {
-                    downloadDao.updateProgress(
+                    if (isStopped) {
+                        preserveStoppedDownload(downloadId, entity, stagingFile)
+                        return@withContext Result.success()
+                    }
+
+                    // File integrity verification
+                    val actualLen = stagingFile.length()
+                    if (actualLen <= 0L) {
+                        throw IOException("Downloaded file is empty.")
+                    }
+                    if (totalBytes > 0L && actualLen < totalBytes) {
+                        downloadDao.updateProgress(
+                            id = downloadId,
+                            bytesDownloaded = actualLen,
+                            totalBytes = totalBytes,
+                            speed = 0L,
+                            eta = 0L,
+                            status = DownloadStatus.PAUSED.name
+                        )
+                        return@withContext Result.retry()
+                    }
+
+                    downloadDao.updateActiveProgress(
                         id = downloadId,
                         bytesDownloaded = actualLen,
-                        totalBytes = totalBytes,
+                        totalBytes = if (totalBytes > 0L) totalBytes.coerceAtLeast(actualLen) else actualLen,
                         speed = 0L,
-                        eta = 0L,
-                        status = DownloadStatus.PAUSED.name
+                        eta = 0L
                     )
-                    return@withContext Result.retry()
+
+                    // Commit staging file to MediaStore / SAF / final location
+                    val committed = storageManager.commitDownloadedFile(
+                        stagingFile = stagingFile,
+                        fileName = entity.fileName,
+                        mimeType = entity.mimeType,
+                        resolutionLabel = entity.resolutionLabel,
+                        resolutionHeight = entity.resolutionHeight,
+                        isAudioOnly = entity.isAudioOnly,
+                        settings = settings
+                    )
+
+                    val finalResolutionLabel = if (!entity.isAudioOnly && committed.detectedHeight != null) {
+                        com.example.domain.model.VideoQualityTier.formatLabelFromHeight(committed.detectedHeight)
+                    } else {
+                        entity.resolutionLabel
+                    }
+
+                    downloadDao.markCompleted(
+                        id = downloadId,
+                        finalBytes = committed.finalBytes,
+                        localUri = committed.uriString,
+                        localPath = committed.displayPath,
+                        fileName = committed.finalFileName,
+                        sha256 = committed.sha256,
+                        resolutionLabel = finalResolutionLabel,
+                        resolutionHeight = committed.detectedHeight ?: entity.resolutionHeight,
+                        format = entity.format,
+                        mimeType = entity.mimeType,
+                        durationMs = committed.detectedDurationMs,
+                        completedAt = System.currentTimeMillis()
+                    )
+
+                    notificationHelper.notifyCompleted(
+                        downloadId = downloadId,
+                        title = entity.title,
+                        resolution = finalResolutionLabel,
+                        notificationsEnabled = settings.notificationsEnabled
+                    )
                 }
-
-                // Commit staging file to MediaStore / SAF / final location
-                val committed = storageManager.commitDownloadedFile(
-                    stagingFile = stagingFile,
-                    fileName = entity.fileName,
-                    mimeType = entity.mimeType,
-                    resolutionLabel = entity.resolutionLabel,
-                    resolutionHeight = entity.resolutionHeight,
-                    isAudioOnly = entity.isAudioOnly,
-                    settings = settings
-                )
-
-                val finalResolutionLabel = if (!entity.isAudioOnly && committed.detectedHeight != null) {
-                    com.example.domain.model.VideoQualityTier.formatLabelFromHeight(committed.detectedHeight)
-                } else {
-                    entity.resolutionLabel
-                }
-
-                downloadDao.markCompleted(
-                    id = downloadId,
-                    finalBytes = committed.finalBytes,
-                    localUri = committed.uriString,
-                    localPath = committed.displayPath,
-                    fileName = committed.finalFileName,
-                    sha256 = committed.sha256,
-                    resolutionLabel = finalResolutionLabel,
-                    resolutionHeight = committed.detectedHeight ?: entity.resolutionHeight,
-                    format = entity.format,
-                    mimeType = entity.mimeType,
-                    durationMs = committed.detectedDurationMs,
-                    completedAt = System.currentTimeMillis()
-                )
-
-                notificationHelper.notifyCompleted(
-                    downloadId = downloadId,
-                    title = entity.title,
-                    resolution = finalResolutionLabel,
-                    notificationsEnabled = settings.notificationsEnabled
-                )
+            } finally {
+                httpStopWatcher.cancel()
             }
 
             Result.success()
@@ -477,19 +536,28 @@ class VideoDownloadWorker @AssistedInject constructor(
                 return@withContext Result.success()
             }
             val latest = downloadDao.getById(downloadId)
-            val currentBytes = if (stagingFile.exists()) stagingFile.length() else (latest?.bytesDownloaded ?: 0L)
-            downloadDao.updateProgress(
-                id = downloadId,
-                bytesDownloaded = currentBytes,
-                totalBytes = (latest?.totalBytes ?: 0L).coerceAtLeast(currentBytes),
-                speed = 0L,
-                eta = 0L,
-                status = DownloadStatus.FAILED.name
-            )
+            val currentBytes = if (isYtDlpDownload) {
+                storageManager.getYtDlpDownloadedBytes(downloadId).takeIf { it > 0L }
+                    ?: (latest?.bytesDownloaded ?: 0L)
+            } else {
+                if (stagingFile.exists()) stagingFile.length() else (latest?.bytesDownloaded ?: 0L)
+            }
+            if (isYtDlpDownload) {
+                downloadDao.updateYtDlpPausedProgress(downloadId, currentBytes, DownloadStatus.FAILED.name)
+            } else {
+                downloadDao.updateProgress(
+                    id = downloadId,
+                    bytesDownloaded = currentBytes,
+                    totalBytes = (latest?.totalBytes ?: 0L).let { if (it > 0L) it.coerceAtLeast(currentBytes) else 0L },
+                    speed = 0L,
+                    eta = 0L,
+                    status = DownloadStatus.FAILED.name
+                )
+            }
             val errMsg = "Connection interrupted: ${io.message ?: "network error"}"
             downloadDao.updateStatus(downloadId, DownloadStatus.FAILED.name, errMsg)
             notificationHelper.notifyFailed(downloadId, entity.title, errMsg, settings.notificationsEnabled)
-            if (runAttemptCount < 2) Result.retry() else Result.failure()
+            if (settings.autoRetryFailed && runAttemptCount < 2) Result.retry() else Result.failure()
         } catch (e: Exception) {
             if (isStopped) {
                 preserveStoppedDownload(downloadId, entity, stagingFile)

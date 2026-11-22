@@ -6,6 +6,8 @@ import com.example.data.local.dao.AudioLibraryDao
 import com.example.data.local.entity.AudioPlaylistEntity
 import com.example.data.local.entity.AudioPlaylistTrackEntity
 import com.example.domain.model.DownloadTask
+import com.example.domain.model.EqualizerPreset
+import com.example.domain.repository.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -34,13 +36,20 @@ data class AudioLibraryUiState(
     val selectedPlaylistId: String? = null,
     val searchQuery: String = "",
     val sort: AudioSort = AudioSort.RECENT,
-    val message: String? = null
+    val message: String? = null,
+    val defaultPlaybackSpeed: Float = 1.0f,
+    val seekIntervalSeconds: Int = 10,
+    val equalizerEnabled: Boolean = false,
+    val equalizerPreset: EqualizerPreset = EqualizerPreset.FLAT,
+    val equalizerBandLevelsMb: List<Int> = listOf(0, 0, 0, 0, 0),
+    val bassBoostStrength: Int = 0
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class AudioLibraryViewModel @Inject constructor(
-    private val audioLibraryDao: AudioLibraryDao
+    private val audioLibraryDao: AudioLibraryDao,
+    private val settingsRepository: SettingsRepository
 ) : ViewModel() {
     private val selectedPlaylistId = MutableStateFlow<String?>(null)
     private val searchQuery = MutableStateFlow("")
@@ -71,8 +80,20 @@ class AudioLibraryViewModel @Inject constructor(
         AudioLibraryUiState(ordered, playlists, selectedId, query, selectedSort)
     }.flowOn(Dispatchers.Default)
 
-    val uiState: StateFlow<AudioLibraryUiState> = combine(libraryState, message) { state, notice ->
-        state.copy(message = notice)
+    val uiState: StateFlow<AudioLibraryUiState> = combine(
+        libraryState,
+        message,
+        settingsRepository.settings
+    ) { state, notice, settings ->
+        state.copy(
+            message = notice,
+            defaultPlaybackSpeed = settings.defaultPlaybackSpeed,
+            seekIntervalSeconds = settings.seekIntervalSeconds,
+            equalizerEnabled = settings.equalizerEnabled,
+            equalizerPreset = settings.equalizerPreset,
+            equalizerBandLevelsMb = settings.equalizerBandLevelsMb,
+            bassBoostStrength = settings.bassBoostStrength
+        )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -116,6 +137,53 @@ class AudioLibraryViewModel @Inject constructor(
         viewModelScope.launch {
             audioLibraryDao.removeTrack(playlistId, trackId)
             message.value = "Removed from playlist."
+        }
+    }
+
+    fun setEqualizerEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setEqualizerEnabled(enabled) }
+    }
+
+    fun selectEqualizerPreset(preset: EqualizerPreset) {
+        viewModelScope.launch {
+            settingsRepository.setEqualizerEnabled(true)
+            settingsRepository.applyEqualizerPreset(
+                preset = preset,
+                bandLevelsMb = preset.defaultBandsMb,
+                bassStrength = preset.defaultBassStrength
+            )
+        }
+    }
+
+    fun setEqualizerBandLevel(bandIndex: Int, levelMb: Int, totalBands: Int) {
+        viewModelScope.launch {
+            val current = uiState.value.equalizerBandLevelsMb
+            val updated = List(totalBands.coerceAtLeast(1)) { idx ->
+                if (idx == bandIndex) levelMb else current.getOrNull(idx) ?: 0
+            }
+            if (!uiState.value.equalizerEnabled) {
+                settingsRepository.setEqualizerEnabled(true)
+            }
+            settingsRepository.setEqualizerBandLevels(updated)
+        }
+    }
+
+    fun setBassBoostStrength(strength: Int) {
+        viewModelScope.launch {
+            if (!uiState.value.equalizerEnabled && strength > 0) {
+                settingsRepository.setEqualizerEnabled(true)
+            }
+            settingsRepository.setBassBoostStrength(strength)
+        }
+    }
+
+    fun resetEqualizerFlat() {
+        viewModelScope.launch {
+            settingsRepository.applyEqualizerPreset(
+                preset = EqualizerPreset.FLAT,
+                bandLevelsMb = EqualizerPreset.FLAT.defaultBandsMb,
+                bassStrength = 0
+            )
         }
     }
 }

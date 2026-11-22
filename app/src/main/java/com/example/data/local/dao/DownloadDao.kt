@@ -31,6 +31,9 @@ interface DownloadDao {
     @Query("SELECT * FROM downloads WHERE status = 'QUEUED' ORDER BY createdAt ASC")
     suspend fun getQueued(): List<DownloadEntity>
 
+    @Query("SELECT * FROM downloads WHERE status = 'PAUSED' ORDER BY createdAt ASC")
+    suspend fun getPaused(): List<DownloadEntity>
+
     @Query("SELECT COUNT(*) FROM downloads WHERE status = 'DOWNLOADING'")
     suspend fun countDownloading(): Int
 
@@ -49,6 +52,17 @@ interface DownloadDao {
     suspend fun update(entity: DownloadEntity)
 
     @Query(
+        "UPDATE downloads SET bytesDownloaded = :bytesDownloaded, totalBytes = :totalBytes, reportedProgressPercent = NULL, speedBytesPerSec = :speed, etaSeconds = :eta WHERE id = :id AND status = 'DOWNLOADING'"
+    )
+    suspend fun updateActiveProgress(
+        id: String,
+        bytesDownloaded: Long,
+        totalBytes: Long,
+        speed: Long,
+        eta: Long
+    )
+
+    @Query(
         "UPDATE downloads SET bytesDownloaded = :bytesDownloaded, totalBytes = :totalBytes, reportedProgressPercent = NULL, speedBytesPerSec = :speed, etaSeconds = :eta, status = :status WHERE id = :id"
     )
     suspend fun updateProgress(
@@ -60,15 +74,14 @@ interface DownloadDao {
         status: String
     )
 
-    @Query("UPDATE downloads SET bytesDownloaded = :bytesDownloaded, totalBytes = :totalBytes, speedBytesPerSec = :speed, reportedProgressPercent = :percent, etaSeconds = :eta, status = :status WHERE id = :id")
+    @Query("UPDATE downloads SET bytesDownloaded = :bytesDownloaded, totalBytes = :totalBytes, speedBytesPerSec = :speed, reportedProgressPercent = :percent, etaSeconds = :eta WHERE id = :id AND status = 'DOWNLOADING'")
     suspend fun updateYtDlpProgress(
         id: String,
         bytesDownloaded: Long,
         totalBytes: Long,
         speed: Long,
         percent: Int,
-        eta: Long,
-        status: String
+        eta: Long
     )
 
     @Query("UPDATE downloads SET bytesDownloaded = :bytesDownloaded, totalBytes = CASE WHEN totalBytes > 0 THEN MAX(totalBytes, :bytesDownloaded) ELSE 0 END, speedBytesPerSec = 0, etaSeconds = 0, reportedProgressPercent = CASE WHEN totalBytes > 0 THEN MIN(99, CAST(:bytesDownloaded * 100.0 / MAX(totalBytes, :bytesDownloaded) AS INTEGER)) ELSE reportedProgressPercent END, status = :status WHERE id = :id")

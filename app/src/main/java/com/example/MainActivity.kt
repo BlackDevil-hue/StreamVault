@@ -59,7 +59,10 @@ class MainActivity : ComponentActivity() {
                 .collectAsStateWithLifecycle(initialValue = 0)
             val windowSizeClass = calculateWindowSizeClass(this)
 
-            StreamVaultTheme(themePreference = settings.themePreference) {
+            StreamVaultTheme(
+                themePreference = settings.themePreference,
+                dynamicColor = settings.dynamicColorEnabled
+            ) {
                 StreamVaultNavHost(
                     widthSizeClass = windowSizeClass.widthSizeClass,
                     activeDownloadCount = activeCount,

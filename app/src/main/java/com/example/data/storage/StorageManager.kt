@@ -73,6 +73,24 @@ class StorageManager @Inject constructor(
         )
     }
 
+    fun getTempCacheBytes(): Long {
+        return context.cacheDir.walkTopDown()
+            .filter { it.isFile }
+            .sumOf { it.length() }
+    }
+
+    fun clearTempCache(): Long {
+        val before = getTempCacheBytes()
+        context.cacheDir.listFiles()?.forEach { child ->
+            // Preserve youtubedl-android binary runtime directories if stored in cache; clean temp files/image cache
+            if (child.name != "youtubedl-android") {
+                child.deleteRecursively()
+            }
+        }
+        val after = getTempCacheBytes()
+        return (before - after).coerceAtLeast(0L)
+    }
+
     fun hasEnoughStorage(requiredBytes: Long): Boolean {
         if (requiredBytes <= 0L) return true
         val stat = StatFs(context.filesDir.absolutePath)
@@ -116,12 +134,13 @@ class StorageManager @Inject constructor(
                 )
             }.getOrNull()
             if (safResult != null) {
+                val safFileSize = stagingFile.length()
                 stagingFile.delete()
                 return@withContext CommittedFileResult(
                     uriString = safResult.first,
                     displayPath = safResult.second,
                     finalFileName = safResult.third,
-                    finalBytes = stagingFile.length().takeIf { it > 0 } ?: safResultLength(safResult.first),
+                    finalBytes = safFileSize.takeIf { it > 0 } ?: safResultLength(safResult.first),
                     sha256 = sha256,
                     detectedHeight = actualHeight,
                     detectedDurationMs = probe.durationMs

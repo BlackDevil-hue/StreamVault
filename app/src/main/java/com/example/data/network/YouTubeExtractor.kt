@@ -37,8 +37,8 @@ class YouTubeExtractor @Inject constructor(
     suspend fun expandPlaylist(
         rawUrl: String,
         startIndex: Int = 1,
-        endIndex: Int = 20,
-        limit: Int = 20
+        endIndex: Int = 50,
+        limit: Int = 50
     ): List<String> = withContext(Dispatchers.IO) {
         youtubeDlRuntime.ensureLatestYoutubeDl()
         val safeLimit = limit.coerceIn(1, 50)

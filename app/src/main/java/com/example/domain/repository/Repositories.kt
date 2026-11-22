@@ -3,6 +3,7 @@ package com.example.domain.repository
 import com.example.domain.model.AppSettings
 import com.example.domain.model.DefaultQualityPreference
 import com.example.domain.model.DownloadTask
+import com.example.domain.model.EqualizerPreset
 import com.example.domain.model.MediaStreamOption
 import com.example.domain.model.StorageInfo
 import com.example.domain.model.VideoAnalysisResult
@@ -51,6 +52,19 @@ interface SettingsRepository {
     suspend fun setMaxConcurrentDownloads(count: Int)
     suspend fun setWifiOnly(enabled: Boolean)
     suspend fun setOrganizeByQuality(enabled: Boolean)
+    suspend fun setAutoRetryFailed(enabled: Boolean)
     suspend fun setThemePreference(preference: ThemePreference)
+    suspend fun setDynamicColorEnabled(enabled: Boolean)
     suspend fun setNotificationsEnabled(enabled: Boolean)
+    suspend fun setNotificationPromptDismissed(dismissed: Boolean)
+    suspend fun setBrowserAdBlockerEnabled(enabled: Boolean)
+    suspend fun setBrowserDesktopMode(enabled: Boolean)
+    suspend fun setDefaultPlaybackSpeed(speed: Float)
+    suspend fun setSeekIntervalSeconds(seconds: Int)
+    suspend fun setRememberPlaybackPosition(enabled: Boolean)
+    suspend fun setAutoPlayNextVideo(enabled: Boolean)
+    suspend fun setEqualizerEnabled(enabled: Boolean)
+    suspend fun applyEqualizerPreset(preset: EqualizerPreset, bandLevelsMb: List<Int>, bassStrength: Int)
+    suspend fun setEqualizerBandLevels(levelsMb: List<Int>)
+    suspend fun setBassBoostStrength(strength: Int)
 }

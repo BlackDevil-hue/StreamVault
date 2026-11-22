@@ -1,15 +1,21 @@
 package com.example.ui.navigation
 
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.History
@@ -25,21 +31,30 @@ import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -47,11 +62,12 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.example.ui.screens.downloads.DownloadsScreen
-import com.example.ui.screens.browser.BrowserScreen
+import com.example.R
 import com.example.ui.screens.about.AboutScreen
-import com.example.ui.screens.history.HistoryScreen
 import com.example.ui.screens.audio.AudioLibraryScreen
+import com.example.ui.screens.browser.BrowserScreen
+import com.example.ui.screens.downloads.DownloadsScreen
+import com.example.ui.screens.history.HistoryScreen
 import com.example.ui.screens.home.HomeScreen
 import com.example.ui.screens.options.DownloadOptionsScreen
 import com.example.ui.screens.player.PlayerScreen
@@ -76,7 +92,7 @@ private val topLevelTabs = listOf(
     ),
     TopLevelTab(
         route = AppRoute.Downloads,
-        label = "Downloads",
+        label = "Queue",
         selectedIcon = Icons.Rounded.Download,
         unselectedIcon = Icons.Outlined.Download,
         testTag = "nav_downloads"
@@ -157,30 +173,62 @@ fun StreamVaultNavHost(
         }
     }
 
+    val barItemColors = NavigationBarItemDefaults.colors(
+        selectedIconColor = MaterialTheme.colorScheme.primary,
+        selectedTextColor = MaterialTheme.colorScheme.primary,
+        indicatorColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f),
+        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+
+    val railItemColors = NavigationRailItemDefaults.colors(
+        selectedIconColor = MaterialTheme.colorScheme.primary,
+        selectedTextColor = MaterialTheme.colorScheme.primary,
+        indicatorColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f),
+        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             if (isTopLevel && !useRail && !isInPictureInPictureMode) {
-                NavigationBar(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer
-                ) {
-                    topLevelTabs.forEach { tab ->
-                        val selected = currentDestination?.hierarchy?.any {
-                            it.hasRoute(tab.route::class)
-                        } == true
-                        NavigationBarItem(
-                            selected = selected,
-                            onClick = { navigateTopLevel(tab.route) },
-                            icon = {
-                                TabIcon(
-                                    tab = tab,
-                                    selected = selected,
-                                    activeDownloadCount = activeDownloadCount
-                                )
-                            },
-                            label = { Text(tab.label) },
-                            modifier = Modifier.testTag(tab.testTag)
-                        )
+                Column {
+                    HorizontalDivider(
+                        thickness = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)
+                    )
+                    NavigationBar(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                        tonalElevation = 0.dp
+                    ) {
+                        topLevelTabs.forEach { tab ->
+                            val selected = currentDestination?.hierarchy?.any {
+                                it.hasRoute(tab.route::class)
+                            } == true
+                            NavigationBarItem(
+                                selected = selected,
+                                onClick = { navigateTopLevel(tab.route) },
+                                icon = {
+                                    TabIcon(
+                                        tab = tab,
+                                        selected = selected,
+                                        activeDownloadCount = activeDownloadCount
+                                    )
+                                },
+                                label = {
+                                    Text(
+                                        text = tab.label,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp)
+                                    )
+                                },
+                                colors = barItemColors,
+                                modifier = Modifier.testTag(tab.testTag)
+                            )
+                        }
                     }
                 }
             }
@@ -193,7 +241,18 @@ fun StreamVaultNavHost(
         ) {
             if (isTopLevel && useRail && !isInPictureInPictureMode) {
                 NavigationRail(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                    header = {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_launcher_art),
+                            contentDescription = "StreamVault",
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(RoundedCornerShape(11.dp))
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
                 ) {
                     topLevelTabs.forEach { tab ->
                         val selected = currentDestination?.hierarchy?.any {
@@ -209,11 +268,22 @@ fun StreamVaultNavHost(
                                     activeDownloadCount = activeDownloadCount
                                 )
                             },
-                            label = { Text(tab.label) },
+                            label = {
+                                Text(
+                                    text = tab.label,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            },
+                            colors = railItemColors,
                             modifier = Modifier.testTag(tab.testTag)
                         )
                     }
                 }
+                VerticalDivider(
+                    thickness = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)
+                )
             }
 
             Box(modifier = Modifier.weight(1f)) {
@@ -330,7 +400,10 @@ private fun TabIcon(
     if (tab.route == AppRoute.Downloads && activeDownloadCount > 0) {
         BadgedBox(
             badge = {
-                Badge {
+                Badge(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                ) {
                     Text(activeDownloadCount.toString())
                 }
             }

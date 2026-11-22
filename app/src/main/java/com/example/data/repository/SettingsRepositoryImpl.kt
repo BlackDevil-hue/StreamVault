@@ -3,6 +3,7 @@ package com.example.data.repository
 import com.example.data.preferences.UserPreferencesDataStore
 import com.example.domain.model.AppSettings
 import com.example.domain.model.DefaultQualityPreference
+import com.example.domain.model.EqualizerPreset
 import com.example.domain.repository.SettingsRepository
 import com.example.ui.theme.ThemePreference
 import kotlinx.coroutines.flow.Flow
@@ -33,9 +34,51 @@ class SettingsRepositoryImpl @Inject constructor(
     override suspend fun setOrganizeByQuality(enabled: Boolean) =
         preferencesDataStore.setOrganizeByQuality(enabled)
 
+    override suspend fun setAutoRetryFailed(enabled: Boolean) =
+        preferencesDataStore.setAutoRetryFailed(enabled)
+
     override suspend fun setThemePreference(preference: ThemePreference) =
         preferencesDataStore.setThemePreference(preference)
 
+    override suspend fun setDynamicColorEnabled(enabled: Boolean) =
+        preferencesDataStore.setDynamicColorEnabled(enabled)
+
     override suspend fun setNotificationsEnabled(enabled: Boolean) =
         preferencesDataStore.setNotificationsEnabled(enabled)
+
+    override suspend fun setNotificationPromptDismissed(dismissed: Boolean) =
+        preferencesDataStore.setNotificationPromptDismissed(dismissed)
+
+    override suspend fun setBrowserAdBlockerEnabled(enabled: Boolean) =
+        preferencesDataStore.setBrowserAdBlockerEnabled(enabled)
+
+    override suspend fun setBrowserDesktopMode(enabled: Boolean) =
+        preferencesDataStore.setBrowserDesktopMode(enabled)
+
+    override suspend fun setDefaultPlaybackSpeed(speed: Float) =
+        preferencesDataStore.setDefaultPlaybackSpeed(speed)
+
+    override suspend fun setSeekIntervalSeconds(seconds: Int) =
+        preferencesDataStore.setSeekIntervalSeconds(seconds)
+
+    override suspend fun setRememberPlaybackPosition(enabled: Boolean) =
+        preferencesDataStore.setRememberPlaybackPosition(enabled)
+
+    override suspend fun setAutoPlayNextVideo(enabled: Boolean) =
+        preferencesDataStore.setAutoPlayNextVideo(enabled)
+
+    override suspend fun setEqualizerEnabled(enabled: Boolean) =
+        preferencesDataStore.setEqualizerEnabled(enabled)
+
+    override suspend fun applyEqualizerPreset(
+        preset: EqualizerPreset,
+        bandLevelsMb: List<Int>,
+        bassStrength: Int
+    ) = preferencesDataStore.applyEqualizerPreset(preset, bandLevelsMb, bassStrength)
+
+    override suspend fun setEqualizerBandLevels(levelsMb: List<Int>) =
+        preferencesDataStore.setEqualizerBandLevels(levelsMb)
+
+    override suspend fun setBassBoostStrength(strength: Int) =
+        preferencesDataStore.setBassBoostStrength(strength)
 }

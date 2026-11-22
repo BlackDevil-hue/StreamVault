@@ -103,10 +103,10 @@ class DownloadEngineRobolectricTest {
             produceFile = { testFile }
         )
         val prefs = UserPreferencesDataStore(ds)
-        prefs.setMaxConcurrentDownloads(4)
+        prefs.setMaxConcurrentDownloads(5)
         prefs.setWifiOnly(true)
         val current = prefs.getCurrent()
-        assertEquals(4, current.maxConcurrentDownloads)
+        assertEquals(5, current.maxConcurrentDownloads)
         assertTrue(current.wifiOnly)
         testFile.delete()
     }
