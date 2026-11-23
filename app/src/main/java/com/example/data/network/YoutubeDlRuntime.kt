@@ -52,16 +52,21 @@ class YoutubeDlRuntime @Inject constructor(
     }
 
     companion object {
+        /**
+         * Let the installed yt-dlp version select its supported default YouTube clients.
+         * Pinning a client list here quickly goes stale as YouTube changes client support,
+         * and can force requests through clients that require tokens or trigger verification.
+         */
         const val YOUTUBE_EXTRACTOR_ARGS =
-            // Combining tv, ios, and web queries all high-definition formats (4K 2160p, 1440p,
-            // 1080p Full HD, 720p HD, 480p, 360p) while avoiding single-client anti-bot blocks.
-            "youtube:player_client=tv,ios,web"
+            "youtube:player_client=default"
 
+        /** Compatibility retry for versions/videos where the default set is insufficient. */
         const val YOUTUBE_COOKIES_FALLBACK_ARGS =
-            "youtube:player_client=tv,ios"
+            "youtube:player_client=web_embedded,tv_samsung,web"
 
+        /** Last unauthenticated retry; Android clients can require PO tokens. */
         const val YOUTUBE_COOKIELESS_FALLBACK_ARGS =
-            "youtube:player_client=tv,ios,android"
+            "youtube:player_client=tv_samsung,visionos"
 
         fun isBotVerificationError(errorText: String): Boolean {
             val lower = errorText.lowercase()
