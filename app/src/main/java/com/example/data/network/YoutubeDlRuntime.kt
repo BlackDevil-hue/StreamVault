@@ -53,20 +53,21 @@ class YoutubeDlRuntime @Inject constructor(
 
     companion object {
         /**
-         * Let the installed yt-dlp version select its supported default YouTube clients.
-         * Pinning a client list here quickly goes stale as YouTube changes client support,
-         * and can force requests through clients that require tokens or trigger verification.
+         * Keep yt-dlp's version-aware defaults and add Safari's pre-merged HLS ladder.
+         * Those HLS formats can expose higher resolutions without the GVS PO token required
+         * by many separate video/audio formats. The same client set is used for analysis
+         * and download so each displayed resolution remains selectable.
          */
         const val YOUTUBE_EXTRACTOR_ARGS =
-            "youtube:player_client=default"
+            "youtube:player_client=default,web_safari"
 
-        /** Compatibility retry for versions/videos where the default set is insufficient. */
+        /** Retry the trusted HLS client first, then the compatible default clients. */
         const val YOUTUBE_COOKIES_FALLBACK_ARGS =
-            "youtube:player_client=web_embedded,tv_samsung,web"
+            "youtube:player_client=web_safari,web_embedded,tv_samsung,web"
 
         /** Last unauthenticated retry; Android clients can require PO tokens. */
         const val YOUTUBE_COOKIELESS_FALLBACK_ARGS =
-            "youtube:player_client=tv_samsung,visionos"
+            "youtube:player_client=web_safari,tv_samsung,visionos"
 
         fun isBotVerificationError(errorText: String): Boolean {
             val lower = errorText.lowercase()
