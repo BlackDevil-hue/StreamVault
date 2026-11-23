@@ -53,15 +53,15 @@ class YoutubeDlRuntime @Inject constructor(
 
     companion object {
         const val YOUTUBE_EXTRACTOR_ARGS =
-            // Let the current yt-dlp release choose its supported clients. A fixed list of
-            // mobile/embedded clients can yield SABR-only responses with no downloadable URLs.
-            "youtube:player_client=default"
+            // Combining tv, ios, and web queries all high-definition formats (4K 2160p, 1440p,
+            // 1080p Full HD, 720p HD, 480p, 360p) while avoiding single-client anti-bot blocks.
+            "youtube:player_client=tv,ios,web"
 
         const val YOUTUBE_COOKIES_FALLBACK_ARGS =
-            "youtube:player_client=tv,mweb"
+            "youtube:player_client=tv,ios"
 
         const val YOUTUBE_COOKIELESS_FALLBACK_ARGS =
-            "youtube:player_client=android_vr,tv_simply"
+            "youtube:player_client=tv,ios,android"
 
         fun isBotVerificationError(errorText: String): Boolean {
             val lower = errorText.lowercase()

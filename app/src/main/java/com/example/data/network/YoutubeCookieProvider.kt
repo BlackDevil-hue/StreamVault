@@ -15,6 +15,14 @@ class YoutubeCookieProvider @Inject constructor(
 ) {
     fun attachCookies(request: YoutubeDLRequest, pageUrl: String = YOUTUBE_URL): File? {
         runCatching { CookieManager.getInstance().flush() }
+        val isYouTube = isYouTubeUrl(pageUrl)
+        if (isYouTube && !hasAuthenticatedSession()) {
+            // Do not pass unauthenticated/guest visitor cookies to YouTube.
+            // When an automated request contains an anonymous visitor cookie from an emulator/cloud IP,
+            // YouTube's anti-bot system triggers "Sign in to confirm you're not a bot".
+            // Cookieless requests with tv/ios/web client emulation succeed cleanly with all resolutions.
+            return null
+        }
         val entries = collectCookieEntries(pageUrl)
         if (entries.isEmpty()) return null
 
@@ -28,6 +36,21 @@ class YoutubeCookieProvider @Inject constructor(
         }
         request.addOption("--cookies", cookieFile.absolutePath)
         return cookieFile
+    }
+
+    fun hasAuthenticatedSession(): Boolean {
+        val manager = runCatching { CookieManager.getInstance() }.getOrNull() ?: return false
+        val urlsToCheck = listOf(
+            YOUTUBE_URL,
+            "https://m.youtube.com/",
+            "https://accounts.google.com/"
+        )
+        return urlsToCheck.any { url ->
+            val cookieHeader = runCatching { manager.getCookie(url) }.getOrNull().orEmpty()
+            AUTH_COOKIE_NAMES.any { name ->
+                cookieHeader.contains("$name=")
+            }
+        }
     }
 
     private data class CookieEntry(
@@ -86,5 +109,9 @@ class YoutubeCookieProvider @Inject constructor(
     private companion object {
         const val YOUTUBE_URL = "https://www.youtube.com/"
         const val THIRTY_DAYS_SECONDS = 30L * 24L * 60L * 60L
+        val AUTH_COOKIE_NAMES = setOf(
+            "LOGIN_INFO", "SID", "SSID", "SAPISID", "APISID", "HSID",
+            "__Secure-1PSID", "__Secure-3PSID"
+        )
     }
 }
