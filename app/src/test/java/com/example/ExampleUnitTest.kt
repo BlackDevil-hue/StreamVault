@@ -337,7 +337,7 @@ class ExampleUnitTest {
             rawArtist = "Ed Sheeran",
             uploader = "Atlantic Records"
         )
-        assertEquals("Shape of You", ytMusic.songTitle)
+        assertEquals("Shape Of You", ytMusic.songTitle)
         assertEquals("Ed Sheeran", ytMusic.songArtist)
 
         // 2. Bollywood label upload with description credits and pipe-heavy video title
@@ -376,6 +376,68 @@ class ExampleUnitTest {
     }
 
     @Test
+    fun `youtube audio metadata extractor formats title case and keeps all performing artists`() {
+        val extractor = com.example.data.network.YouTubeAudioMetadataExtractor
+
+        // Title Case normalization ("first letter capital and rest small", e.g., "I Love You")
+        assertEquals("I Love You", extractor.formatAudioTitleCase("i love you"))
+        assertEquals("I Love You", extractor.formatAudioTitleCase("I LOVE YOU"))
+        assertEquals("I Love You", extractor.formatAudioTitleCase("i LoVe YoU"))
+        assertEquals("Don't Let Me Down", extractor.formatAudioTitleCase("DON'T LET ME DOWN"))
+
+        val allCapsTrack = extractor.extract(
+            rawTitle = "I LOVE YOU (OFFICIAL VIDEO)",
+            rawTrack = "I LOVE YOU",
+            rawArtist = "Bodyguard"
+        )
+        assertEquals("I Love You", allCapsTrack.songTitle)
+
+        // Single-line pipe-separated description credits & multiple singers without dropping after '|'
+        val pipeCredits = extractor.extract(
+            rawTitle = "VE KAMLEYA | Rocky Aur Rani Kii Prem Kahaani",
+            uploader = "Saregama Music",
+            description = "Song : VE KAMLEYA | Singers : Arijit Singh | Shreya Ghoshal | Music : Pritam"
+        )
+        assertEquals("Ve Kamleya", pipeCredits.songTitle)
+        assertEquals("Arijit Singh, Shreya Ghoshal", pipeCredits.songArtist)
+
+        // Multi-line singer credits (Male Singer + Female Singer + Rap)
+        val multiLineSingers = extractor.extract(
+            rawTitle = "DIL NE YEH KAHA HAIN DIL SE (Full Song)",
+            uploader = "Tips Official",
+            description = "🎤 Song : DIL NE YEH KAHA HAIN DIL SE\nMale Singer : Udit Narayan\nFemale Singer : Alka Yagnik\nRap : Kumar Sanu"
+        )
+        assertEquals("Dil Ne Yeh Kaha Hain Dil Se", multiLineSingers.songTitle)
+        assertEquals("Udit Narayan, Alka Yagnik, Kumar Sanu", multiLineSingers.songArtist)
+
+        // Partial rawArtist enriched by co-artists in title and "(with ...)"
+        val partialRawWithTitleCoArtists = extractor.extract(
+            rawTitle = "Alan Walker, Sabrina Carpenter & Farruko - ON MY WAY (with K-391)",
+            rawArtist = "Alan Walker"
+        )
+        assertEquals("On My Way", partialRawWithTitleCoArtists.songTitle)
+        assertEquals("Alan Walker, Sabrina Carpenter, Farruko, K-391", partialRawWithTitleCoArtists.songArtist)
+
+        // Collaboration using 'x' separator and "Artist A ft. Artist B - Song"
+        val collabXAndLeftFeat = extractor.extract(
+            rawTitle = "AP Dhillon x Gurinder Gill ft. Shinda Kahlon - EXCUSES (Official Audio)"
+        )
+        assertEquals("Excuses", collabXAndLeftFeat.songTitle)
+        assertEquals("AP Dhillon, Gurinder Gill, Shinda Kahlon", collabXAndLeftFeat.songArtist)
+
+        // Pipe-separated co-artist segment recovered when overlapping partial rawArtist
+        val pipeCoArtists = extractor.extract(
+            rawTitle = "TERA HONE LAGA HOON | Atif Aslam & Alisha Chinai | Ajab Prem Ki Ghazab Kahani",
+            rawTrack = "TERA HONE LAGA HOON",
+            rawArtist = "Atif Aslam",
+            uploader = "Tips Official"
+        )
+        assertEquals("Tera Hone Laga Hoon", pipeCoArtists.songTitle)
+        assertEquals("Atif Aslam, Alisha Chinai", pipeCoArtists.songArtist)
+    }
+
+
+    @Test
     fun `lrc parser parses synced timestamps and tracks active playback line`() {
         val rawLrc = """
             [ti:Test Song]
@@ -402,5 +464,34 @@ class ExampleUnitTest {
         assertEquals(1, com.example.domain.model.LrcParser.findActiveLineIndex(lines, 12_000L))
         assertEquals(2, com.example.domain.model.LrcParser.findActiveLineIndex(lines, 30_000L))
         assertEquals(3, com.example.domain.model.LrcParser.findActiveLineIndex(lines, 42_000L))
+
+        // Sync offset: delaying by -2000ms keeps line 0 active until 14s
+        assertEquals(0, com.example.domain.model.LrcParser.findActiveLineIndex(lines, 12_000L, offsetMs = -2_000L))
+        // Sync offset: advancing by +2000ms activates line 2 at 23.5s
+        assertEquals(2, com.example.domain.model.LrcParser.findActiveLineIndex(lines, 23_500L, offsetMs = 2_000L))
+    }
+
+    @Test
+    fun `lrc parser applies offset header tag and strips enhanced inline word timestamps`() {
+        val enhancedLrc = """
+            [offset:+1000]
+            [00:05.00] <00:05.00>Hello <00:05.40>world
+            [00:10.00] Next line
+        """.trimIndent()
+
+        val lines = com.example.domain.model.LrcParser.parse(enhancedLrc)
+        assertEquals(2, lines.size)
+        assertEquals(4_000L, lines[0].timestampMs)
+        assertEquals("Hello world", lines[0].text)
+        assertEquals(9_000L, lines[1].timestampMs)
+        assertEquals("Next line", lines[1].text)
+    }
+
+    @Test
+    fun `youtube runtime detects bot verification messages accurately`() {
+        val runtime = com.example.data.network.YoutubeDlRuntime
+        assertTrue(runtime.isBotVerificationError("ERROR: [youtube] abc: Sign in to confirm you’re not a bot."))
+        assertTrue(runtime.isBotVerificationError("Sign in to confirm you're not a bot"))
+        assertFalse(runtime.isBotVerificationError("Video unavailable"))
     }
 }

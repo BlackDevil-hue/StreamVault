@@ -38,11 +38,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.Audiotrack
 import androidx.compose.material.icons.rounded.BrightnessHigh
@@ -54,6 +56,7 @@ import androidx.compose.material.icons.rounded.FullscreenExit
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
+import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -96,6 +99,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -120,9 +124,13 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.audio.AudioPlaybackService
 import com.example.audio.EqualizerCapabilities
+import com.example.domain.model.LyricsUiState
 import com.example.ui.components.FormatUtils
 import com.example.ui.components.MediaThumbnail
 import com.example.ui.screens.audio.AudioEqualizerSheetContent
+import com.example.ui.screens.audio.LiveLyricPreviewBanner
+import com.example.ui.screens.audio.LyricsSearchDialog
+import com.example.ui.screens.audio.LyricsViewport
 import kotlinx.coroutines.delay
 
 private enum class VideoResizeOption(val label: String, val mode: Int) {
@@ -140,6 +148,7 @@ fun PlayerScreen(
     viewModel: PlayerViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val lyricsState by viewModel.lyricsState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -168,6 +177,8 @@ fun PlayerScreen(
     var showSubtitleSheet by remember { mutableStateOf(false) }
     var showAudioSheet by remember { mutableStateOf(false) }
     var showEqualizerSheet by remember { mutableStateOf(false) }
+    var showLyricsView by remember { mutableStateOf(false) }
+    var showLyricsSearchDialog by remember { mutableStateOf(false) }
     var subtitlesEnabled by remember { mutableStateOf(true) }
 
     var brightnessFraction by remember {
@@ -332,6 +343,17 @@ fun PlayerScreen(
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
                 if (playing) hasEnded = false
+                currentPositionMs = player.currentPosition.coerceAtLeast(0L)
+            }
+
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int
+            ) {
+                if (!isScrubbing) {
+                    currentPositionMs = player.currentPosition.coerceAtLeast(0L)
+                }
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -339,6 +361,7 @@ fun PlayerScreen(
                 if (player.duration > 0L) {
                     durationMs = player.duration
                 }
+                currentPositionMs = player.currentPosition.coerceAtLeast(0L)
                 if (playbackState == Player.STATE_ENDED) {
                     hasEnded = true
                     uiState.task?.id?.let { id ->
@@ -366,7 +389,7 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(activePlayer, isPlaying, isScrubbing) {
+    LaunchedEffect(activePlayer, isPlaying, isScrubbing, isAudioMode) {
         val player = activePlayer ?: return@LaunchedEffect
         while (true) {
             if (!isScrubbing) {
@@ -374,8 +397,28 @@ fun PlayerScreen(
             }
             if (player.duration > 0L) durationMs = player.duration
             isPlaying = player.isPlaying
-            delay(350L)
+            delay(if (isPlaying && isAudioMode) 100L else 350L)
         }
+    }
+
+    LaunchedEffect(isAudioMode, uiState.task?.id, uiState.task?.title) {
+        val task = uiState.task ?: return@LaunchedEffect
+        if (!isAudioMode) return@LaunchedEffect
+        var trackDuration = task.durationMs?.takeIf { it > 0L }
+            ?: activePlayer?.duration?.takeIf { it > 0L }
+        if (trackDuration == null) {
+            repeat(12) {
+                delay(50L)
+                trackDuration = activePlayer?.duration?.takeIf { it > 0L }
+                if (trackDuration != null) return@repeat
+            }
+        }
+        viewModel.loadLyricsForTrack(
+            trackId = task.id,
+            title = task.title,
+            artist = task.artist,
+            durationMs = trackDuration
+        )
     }
 
     // Auto-hide controls after 3.5s during playback
@@ -554,7 +597,8 @@ fun PlayerScreen(
                                     text = artist,
                                     style = MaterialTheme.typography.titleSmall,
                                     color = Color.LightGray,
-                                    maxLines = 1,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 3,
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
@@ -760,6 +804,23 @@ fun PlayerScreen(
                                 }
                             }
                             if (isAudioMode) {
+                                IconButton(
+                                    onClick = { showLyricsView = !showLyricsView },
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .background(Color.Black.copy(alpha = 0.42f), CircleShape)
+                                        .testTag("player_lyrics_toggle_button")
+                                ) {
+                                    Icon(
+                                        Icons.Rounded.Lyrics,
+                                        contentDescription = "Toggle song lyrics",
+                                        tint = if (showLyricsView) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            Color.White
+                                        }
+                                    )
+                                }
                                 IconButton(
                                     onClick = { showEqualizerSheet = true },
                                     modifier = Modifier
@@ -979,6 +1040,14 @@ fun PlayerScreen(
                                 }
                             }
 
+                            if (isAudioMode && !showLyricsView) {
+                                LiveLyricPreviewBanner(
+                                    lyricsState = lyricsState,
+                                    positionMs = if (isScrubbing) scrubPositionMs else currentPositionMs,
+                                    onClick = { showLyricsView = true },
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                )
+                            }
                             val displayedPosMs = if (isScrubbing) scrubPositionMs else currentPositionMs
                             Slider(
                                 value = if (durationMs > 0L) {
@@ -1078,6 +1147,182 @@ fun PlayerScreen(
                                             tint = Color.White
                                         )
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Dedicated Interactive Synced Lyrics Overlay for Audio Mode
+                if (isAudioMode && showLyricsView && !isInPictureInPictureMode) {
+                    val displayedPosMs = if (isScrubbing) scrubPositionMs else currentPositionMs
+                    Surface(
+                        color = Color(0xFF070B14).copy(alpha = 0.96f),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .safeDrawingPadding()
+                                .widthIn(max = 640.dp)
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                IconButton(
+                                    onClick = onBack,
+                                    modifier = Modifier.size(48.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                        contentDescription = "Back",
+                                        tint = Color.White
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = uiState.task?.title ?: "Now Playing",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = Color.White,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    uiState.task?.artist?.takeIf { it.isNotBlank() }?.let { artist ->
+                                        Text(
+                                            text = artist,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color.LightGray,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                                FilledTonalButton(
+                                    onClick = { showLyricsView = false },
+                                    modifier = Modifier.height(42.dp)
+                                ) {
+                                    Icon(Icons.Rounded.Album, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Artwork")
+                                }
+                            }
+
+                            LyricsViewport(
+                                lyricsState = lyricsState,
+                                positionMs = displayedPosMs,
+                                onSeekTo = { targetMs ->
+                                    val clamped = targetMs.coerceAtLeast(0L)
+                                    currentPositionMs = clamped
+                                    activePlayer?.seekTo(clamped)
+                                },
+                                onRetry = {
+                                    val task = uiState.task ?: return@LyricsViewport
+                                    viewModel.loadLyricsForTrack(
+                                        trackId = task.id,
+                                        title = task.title,
+                                        artist = task.artist,
+                                        durationMs = durationMs.takeIf { it > 0L } ?: task.durationMs,
+                                        forceRefresh = true
+                                    )
+                                },
+                                onOpenSearch = { showLyricsSearchDialog = true },
+                                onAdjustOffset = viewModel::adjustLyricsOffset,
+                                onResetOffset = viewModel::resetLyricsOffset,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                            )
+
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Slider(
+                                    value = if (durationMs > 0L) {
+                                        (displayedPosMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+                                    } else 0f,
+                                    onValueChange = { fraction ->
+                                        if (durationMs > 0L) {
+                                            isScrubbing = true
+                                            scrubPositionMs = (fraction * durationMs).toLong()
+                                        }
+                                    },
+                                    onValueChangeFinished = {
+                                        if (durationMs > 0L && isScrubbing) {
+                                            currentPositionMs = scrubPositionMs
+                                            activePlayer?.seekTo(scrubPositionMs)
+                                        }
+                                        isScrubbing = false
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = FormatUtils.formatDuration(displayedPosMs),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.LightGray
+                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                    ) {
+                                        IconButton(
+                                            onClick = {
+                                                val player = activePlayer ?: return@IconButton
+                                                player.seekTo((player.currentPosition - seekIntervalMs).coerceAtLeast(0L))
+                                            },
+                                            modifier = Modifier.size(48.dp)
+                                        ) {
+                                            Icon(Icons.Rounded.Replay10, contentDescription = "Rewind", tint = Color.White)
+                                        }
+                                        Surface(
+                                            onClick = {
+                                                val player = activePlayer ?: return@Surface
+                                                if (hasEnded) {
+                                                    AudioPlaybackService.startForegroundPlayback(context)
+                                                    player.seekTo(0L)
+                                                    player.play()
+                                                } else if (player.isPlaying) {
+                                                    player.pause()
+                                                } else {
+                                                    AudioPlaybackService.startForegroundPlayback(context)
+                                                    player.play()
+                                                }
+                                            },
+                                            shape = CircleShape,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(54.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                                    contentDescription = if (isPlaying) "Pause" else "Play",
+                                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                                    modifier = Modifier.size(28.dp)
+                                                )
+                                            }
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                val player = activePlayer ?: return@IconButton
+                                                val maxDur = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
+                                                player.seekTo((player.currentPosition + seekIntervalMs).coerceAtMost(maxDur))
+                                            },
+                                            modifier = Modifier.size(48.dp)
+                                        ) {
+                                            Icon(Icons.Rounded.Forward10, contentDescription = "Forward", tint = Color.White)
+                                        }
+                                    }
+                                    Text(
+                                        text = FormatUtils.formatDuration(durationMs),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.LightGray
+                                    )
                                 }
                             }
                         }
@@ -1312,6 +1557,35 @@ fun PlayerScreen(
                 onResetFlat = viewModel::resetEqualizerFlat
             )
         }
+    }
+
+    if (showLyricsSearchDialog && uiState.task != null) {
+        val task = uiState.task!!
+        val initialTitle = when (val s = lyricsState) {
+            is LyricsUiState.Loaded -> s.content.queryTitle
+            is LyricsUiState.Unavailable -> s.queryTitle
+            else -> task.title
+        }
+        val initialArtist = when (val s = lyricsState) {
+            is LyricsUiState.Loaded -> s.content.queryArtist.orEmpty()
+            is LyricsUiState.Unavailable -> s.queryArtist.orEmpty()
+            else -> task.artist.orEmpty()
+        }
+        LyricsSearchDialog(
+            initialTitle = initialTitle,
+            initialArtist = initialArtist,
+            onDismiss = { showLyricsSearchDialog = false },
+            onSearch = { searchTitle, searchArtist ->
+                showLyricsSearchDialog = false
+                showLyricsView = true
+                viewModel.searchLyrics(
+                    trackId = task.id,
+                    customTitle = searchTitle,
+                    customArtist = searchArtist.ifBlank { null },
+                    durationMs = durationMs.takeIf { it > 0L } ?: task.durationMs
+                )
+            }
+        )
     }
 }
 

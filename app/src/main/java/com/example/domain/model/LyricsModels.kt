@@ -12,7 +12,8 @@ data class LyricsContent(
     val syncedLines: List<LyricLine>,
     val plainLines: List<String>,
     val isInstrumental: Boolean = false,
-    val sourceLabel: String? = null
+    val sourceLabel: String? = null,
+    val offsetMs: Long = 0L
 ) {
     val hasSyncedLyrics: Boolean get() = syncedLines.isNotEmpty()
     val hasAnyLyrics: Boolean get() = syncedLines.isNotEmpty() || plainLines.isNotEmpty()
@@ -34,20 +35,32 @@ sealed interface LyricsUiState {
 object LrcParser {
 
     private val TIMESTAMP_REGEX = Regex("\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?]")
+    private val INLINE_WORD_TIMESTAMP_REGEX = Regex("<\\d{1,3}:\\d{2}(?:[.:]\\d{1,3})?>")
+    private val OFFSET_TAG_REGEX = Regex("^\\[offset:\\s*([+-]?\\d+)]$", RegexOption.IGNORE_CASE)
     private val METADATA_TAG_REGEX = Regex("^\\[[a-zA-Z]{1,10}:.*]$")
 
     fun parse(rawLrc: String?): List<LyricLine> {
         if (rawLrc.isNullOrBlank()) return emptyList()
-        val parsed = mutableListOf<LyricLine>()
+        var lrcHeaderOffsetMs = 0L
+        val rawParsed = mutableListOf<LyricLine>()
 
         rawLrc.lineSequence().forEach { rawLine ->
             val line = rawLine.trim()
-            if (line.isBlank() || METADATA_TAG_REGEX.matches(line)) return@forEach
+            if (line.isBlank()) return@forEach
+
+            OFFSET_TAG_REGEX.matchEntire(line)?.let { offsetMatch ->
+                lrcHeaderOffsetMs = offsetMatch.groupValues[1].toLongOrNull() ?: 0L
+                return@forEach
+            }
+            if (METADATA_TAG_REGEX.matches(line)) return@forEach
 
             val matches = TIMESTAMP_REGEX.findAll(line).toList()
             if (matches.isEmpty()) return@forEach
 
-            val text = TIMESTAMP_REGEX.replace(line, "").trim()
+            val text = TIMESTAMP_REGEX.replace(line, "")
+                .let { INLINE_WORD_TIMESTAMP_REGEX.replace(it, "") }
+                .replace(Regex("\\s{2,}"), " ")
+                .trim()
             if (text.isBlank()) return@forEach
 
             matches.forEach { match ->
@@ -61,16 +74,28 @@ object LrcParser {
                     else -> fractionRaw.take(3).toLongOrNull() ?: 0L
                 }
                 val totalMs = minutes * 60_000L + seconds * 1_000L + millis
-                parsed += LyricLine(timestampMs = totalMs, text = text)
+                rawParsed += LyricLine(timestampMs = totalMs, text = text)
             }
         }
 
-        return parsed.sortedBy { it.timestampMs }
+        val adjusted = if (lrcHeaderOffsetMs != 0L) {
+            rawParsed.map { line ->
+                line.copy(timestampMs = (line.timestampMs - lrcHeaderOffsetMs).coerceAtLeast(0L))
+            }
+        } else {
+            rawParsed
+        }
+
+        return adjusted.sortedBy { it.timestampMs }
     }
 
-    fun findActiveLineIndex(lines: List<LyricLine>, positionMs: Long): Int {
+    fun findActiveLineIndex(
+        lines: List<LyricLine>,
+        positionMs: Long,
+        offsetMs: Long = 0L
+    ): Int {
         if (lines.isEmpty()) return -1
-        val targetMs = positionMs.coerceAtLeast(0L) + 150L
+        val targetMs = (positionMs + offsetMs).coerceAtLeast(0L) + 150L
         if (targetMs < lines.first().timestampMs) return -1
 
         var low = 0

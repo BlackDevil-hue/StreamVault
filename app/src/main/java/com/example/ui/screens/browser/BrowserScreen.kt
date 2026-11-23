@@ -318,6 +318,7 @@ fun BrowserScreen(
                     progress = 100
                     applyPageUrl(url, view.title)
                     syncNavigation(view)
+                    runCatching { CookieManager.getInstance().flush() }
                     if (url != null && BrowserAdBlocker.isYouTubeHost(url)) {
                         view.evaluateJavascript(
                             BrowserAdBlocker.buildHelperScript(adBlockerEnabled),

@@ -23,5 +23,6 @@ data class AudioLyricsEntity(
     val plainLyrics: String?,
     val isInstrumental: Boolean = false,
     val sourceLabel: String? = null,
+    val offsetMs: Long = 0L,
     val fetchedAt: Long
 )

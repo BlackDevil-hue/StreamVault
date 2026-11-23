@@ -19,7 +19,7 @@ import com.example.data.local.entity.DownloadEntity
         AudioPlaylistTrackEntity::class,
         AudioLyricsEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -64,6 +64,13 @@ abstract class AppDatabase : RoomDatabase() {
                         "fetchedAt INTEGER NOT NULL, " +
                         "FOREIGN KEY(downloadId) REFERENCES downloads(id) ON UPDATE NO ACTION ON DELETE CASCADE)"
                 )
+            }
+        }
+
+        val MIGRATION_5_6: Migration = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE audio_lyrics ADD COLUMN offsetMs INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("DELETE FROM audio_lyrics WHERE syncedLrc IS NULL AND isInstrumental = 0 AND sourceLabel = 'LRCLIB'")
             }
         }
     }

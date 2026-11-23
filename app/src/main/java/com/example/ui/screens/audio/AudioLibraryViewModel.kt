@@ -162,6 +162,26 @@ class AudioLibraryViewModel @Inject constructor(
         }
     }
 
+    fun adjustLyricsOffset(deltaMs: Long) {
+        val loaded = (_lyricsState.value as? LyricsUiState.Loaded) ?: return
+        val nextOffset = (loaded.content.offsetMs + deltaMs).coerceIn(-30_000L, 30_000L)
+        viewModelScope.launch {
+            lyricsRepository.updateOffset(loaded.content.trackId, nextOffset)?.let { updated ->
+                _lyricsState.value = updated
+            }
+        }
+    }
+
+    fun resetLyricsOffset() {
+        val loaded = (_lyricsState.value as? LyricsUiState.Loaded) ?: return
+        if (loaded.content.offsetMs == 0L) return
+        viewModelScope.launch {
+            lyricsRepository.updateOffset(loaded.content.trackId, 0L)?.let { updated ->
+                _lyricsState.value = updated
+            }
+        }
+    }
+
     fun createPlaylist(name: String) {
         val normalizedName = name.trim().take(48)
         if (normalizedName.isBlank()) return

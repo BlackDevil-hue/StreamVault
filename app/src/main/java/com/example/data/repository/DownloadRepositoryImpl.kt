@@ -102,7 +102,8 @@ class DownloadRepositoryImpl @Inject constructor(
         val id = UUID.randomUUID().toString()
         val ext = option.format.lowercase().ifBlank { if (option.isAudioOnly) "m4a" else "mp4" }
         val effectiveTitle = if (option.isAudioOnly) {
-            analysis.audioTitle?.takeIf { it.isNotBlank() } ?: analysis.title
+            analysis.audioTitle?.takeIf { it.isNotBlank() }
+                ?: com.example.data.network.YouTubeAudioMetadataExtractor.formatAudioTitleCase(analysis.title)
         } else {
             analysis.title
         }

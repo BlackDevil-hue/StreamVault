@@ -287,7 +287,8 @@ fun DownloadOptionsScreen(
                                         val selectedIsAudioOnly = uiState.selectedOption?.isAudioOnly == true ||
                                             analysis.streams.all { it.isAudioOnly }
                                         val previewTitle = if (selectedIsAudioOnly) {
-                                            analysis.audioTitle?.takeIf { it.isNotBlank() } ?: analysis.title
+                                            analysis.audioTitle?.takeIf { it.isNotBlank() }
+                                                ?: com.example.data.network.YouTubeAudioMetadataExtractor.formatAudioTitleCase(analysis.title)
                                         } else {
                                             analysis.title
                                         }
@@ -331,7 +332,7 @@ fun DownloadOptionsScreen(
                                                     text = previewAuthor,
                                                     style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    maxLines = 1,
+                                                    maxLines = if (selectedIsAudioOnly) 3 else 1,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
                                             }

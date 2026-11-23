@@ -70,7 +70,7 @@ fun LiveLyricPreviewBanner(
         when {
             loaded == null -> null
             loaded.hasSyncedLyrics -> {
-                val idx = LrcParser.findActiveLineIndex(loaded.syncedLines, positionMs)
+                val idx = LrcParser.findActiveLineIndex(loaded.syncedLines, positionMs, loaded.offsetMs)
                 if (idx >= 0) loaded.syncedLines[idx].text
                 else loaded.syncedLines.firstOrNull()?.text
             }
@@ -136,12 +136,14 @@ fun LyricsViewport(
     onSeekTo: (Long) -> Unit,
     onRetry: () -> Unit,
     onOpenSearch: () -> Unit,
+    onAdjustOffset: ((Long) -> Unit)? = null,
+    onResetOffset: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .height(276.dp)
+            .height(292.dp)
             .testTag("audio_lyrics_viewport"),
         shape = RoundedCornerShape(24.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -183,7 +185,7 @@ fun LyricsViewport(
                         Text(
                             text = when {
                                 loaded?.hasSyncedLyrics == true -> "Synced Lyrics"
-                                loaded != null -> "Lyrics"
+                                loaded != null -> "Plain Lyrics"
                                 else -> "Song Lyrics"
                             },
                             style = MaterialTheme.typography.labelLarge,
@@ -228,6 +230,85 @@ fun LyricsViewport(
                                 contentDescription = "Refresh lyrics",
                                 modifier = Modifier.size(20.dp)
                             )
+                        }
+                    }
+                }
+
+                // Timing Sync Bar for synced lyrics (helps align YouTube intros/outros)
+                val loadedContent = (lyricsState as? LyricsUiState.Loaded)?.content
+                if (loadedContent != null && loadedContent.hasSyncedLyrics && onAdjustOffset != null) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Timing sync",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Surface(
+                                onClick = { onAdjustOffset(-500L) },
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier.testTag("lyrics_sync_delay_button")
+                            ) {
+                                Text(
+                                    text = "-0.5s",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                            val offsetSec = loadedContent.offsetMs / 1000.0
+                            val offsetLabel = when {
+                                loadedContent.offsetMs > 0L -> String.format(java.util.Locale.US, "+%.1fs", offsetSec)
+                                loadedContent.offsetMs < 0L -> String.format(java.util.Locale.US, "%.1fs", offsetSec)
+                                else -> "0.0s"
+                            }
+                            Surface(
+                                onClick = { onResetOffset?.invoke() },
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (loadedContent.offsetMs != 0L) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f)
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainerHigh
+                                },
+                                modifier = Modifier.testTag("lyrics_sync_reset_button")
+                            ) {
+                                Text(
+                                    text = offsetLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (loadedContent.offsetMs != 0L) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                            Surface(
+                                onClick = { onAdjustOffset(500L) },
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier.testTag("lyrics_sync_advance_button")
+                            ) {
+                                Text(
+                                    text = "+0.5s",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -338,13 +419,21 @@ fun LyricsViewport(
 
                                 content.hasSyncedLyrics -> {
                                     val listState = rememberLazyListState()
-                                    val activeIdx = remember(content.syncedLines, positionMs) {
-                                        LrcParser.findActiveLineIndex(content.syncedLines, positionMs)
+                                    var didInitialScroll by remember(content.trackId) { mutableStateOf(false) }
+                                    val activeIdx = remember(content.syncedLines, positionMs, content.offsetMs) {
+                                        LrcParser.findActiveLineIndex(
+                                            lines = content.syncedLines,
+                                            positionMs = positionMs,
+                                            offsetMs = content.offsetMs
+                                        )
                                     }
 
-                                    LaunchedEffect(activeIdx, content.trackId) {
-                                        if (activeIdx >= 0) {
-                                            val target = (activeIdx - 2).coerceAtLeast(0)
+                                    LaunchedEffect(activeIdx, content.trackId, content.offsetMs) {
+                                        val target = if (activeIdx >= 0) (activeIdx - 2).coerceAtLeast(0) else 0
+                                        if (!didInitialScroll) {
+                                            didInitialScroll = true
+                                            listState.scrollToItem(target)
+                                        } else {
                                             listState.animateScrollToItem(target)
                                         }
                                     }
@@ -384,7 +473,9 @@ fun LyricsViewport(
                                                     .fillMaxWidth()
                                                     .clip(RoundedCornerShape(12.dp))
                                                     .background(rowBg)
-                                                    .clickable { onSeekTo(line.timestampMs) }
+                                                    .clickable {
+                                                        onSeekTo((line.timestampMs - content.offsetMs).coerceAtLeast(0L))
+                                                    }
                                                     .padding(horizontal = 12.dp, vertical = 8.dp)
                                             ) {
                                                 Text(

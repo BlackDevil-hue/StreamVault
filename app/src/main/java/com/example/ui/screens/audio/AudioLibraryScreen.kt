@@ -104,6 +104,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -252,9 +253,26 @@ fun AudioLibraryScreen(viewModel: AudioLibraryViewModel = hiltViewModel()) {
     DisposableEffect(controller) {
         val activeController = controller ?: return@DisposableEffect onDispose { }
         val listener = object : Player.Listener {
-            override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+                playbackPosition = activeController.currentPosition.coerceAtLeast(0L)
+            }
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                playbackDuration = activeController.duration.takeIf { it > 0L } ?: playbackDuration
+                playbackPosition = activeController.currentPosition.coerceAtLeast(0L)
+            }
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int
+            ) {
+                if (!isScrubbing) {
+                    playbackPosition = activeController.currentPosition.coerceAtLeast(0L)
+                }
+            }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 syncPlayerSnapshot(activeController)
+                playbackPosition = activeController.currentPosition.coerceAtLeast(0L)
             }
             override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
                 shuffleEnabled = shuffleModeEnabled
@@ -271,7 +289,7 @@ fun AudioLibraryScreen(viewModel: AudioLibraryViewModel = hiltViewModel()) {
         onDispose { activeController.removeListener(listener) }
     }
 
-    LaunchedEffect(controller, isScrubbing) {
+    LaunchedEffect(controller, isScrubbing, isPlaying) {
         while (true) {
             val activeController = controller
             if (activeController != null) {
@@ -281,7 +299,7 @@ fun AudioLibraryScreen(viewModel: AudioLibraryViewModel = hiltViewModel()) {
                 playbackDuration = activeController.duration.takeIf { it > 0L } ?: 0L
                 isPlaying = activeController.isPlaying
             }
-            delay(400L)
+            delay(if (isPlaying) 100L else 350L)
         }
     }
 
@@ -296,8 +314,15 @@ fun AudioLibraryScreen(viewModel: AudioLibraryViewModel = hiltViewModel()) {
         val trackId = currentMediaId
         val title = currentTitle.orEmpty()
         if (!trackId.isNullOrBlank() && title.isNotBlank()) {
-            val trackDuration = playbackDuration.takeIf { it > 0L }
-                ?: uiState.tracks.firstOrNull { it.id == trackId }?.durationMs
+            var trackDuration = uiState.tracks.firstOrNull { it.id == trackId }?.durationMs?.takeIf { it > 0L }
+                ?: controller?.duration?.takeIf { it > 0L }
+            if (trackDuration == null) {
+                repeat(12) {
+                    delay(50L)
+                    trackDuration = controller?.duration?.takeIf { it > 0L }
+                    if (trackDuration != null) return@repeat
+                }
+            }
             viewModel.loadLyricsForTrack(
                 trackId = trackId,
                 title = title,
@@ -642,6 +667,8 @@ fun AudioLibraryScreen(viewModel: AudioLibraryViewModel = hiltViewModel()) {
                     }
                 },
                 onOpenLyricsSearch = { showLyricsSearchDialog = true },
+                onAdjustLyricsOffset = viewModel::adjustLyricsOffset,
+                onResetLyricsOffset = viewModel::resetLyricsOffset,
                 onToggleShuffle = {
                     val next = !shuffleEnabled
                     shuffleEnabled = next
@@ -861,7 +888,7 @@ private fun AudioTrackRow(
                 )
                 Text(
                     track.artist?.takeIf { it.isNotBlank() } ?: "Unknown artist",
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1025,6 +1052,8 @@ private fun NowPlayingSheetContent(
     onSeekToMs: (Long) -> Unit,
     onRetryLyrics: () -> Unit,
     onOpenLyricsSearch: () -> Unit,
+    onAdjustLyricsOffset: (Long) -> Unit,
+    onResetLyricsOffset: () -> Unit,
     onToggleShuffle: () -> Unit,
     onPrevious: () -> Unit,
     onRewind: () -> Unit,
@@ -1084,7 +1113,9 @@ private fun NowPlayingSheetContent(
                     positionMs = position,
                     onSeekTo = onSeekToMs,
                     onRetry = onRetryLyrics,
-                    onOpenSearch = onOpenLyricsSearch
+                    onOpenSearch = onOpenLyricsSearch,
+                    onAdjustOffset = onAdjustLyricsOffset,
+                    onResetOffset = onResetLyricsOffset
                 )
             } else {
                 Box(
@@ -1112,6 +1143,7 @@ private fun NowPlayingSheetContent(
                 text = title,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
@@ -1119,7 +1151,8 @@ private fun NowPlayingSheetContent(
                 text = artist.ifBlank { "Unknown artist" },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
+                textAlign = TextAlign.Center,
+                maxLines = 3,
                 overflow = TextOverflow.Ellipsis
             )
             if (queue.isNotEmpty()) {
@@ -1392,7 +1425,7 @@ private fun NowPlayingSheetContent(
                                     text = item.artist,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
+                                    maxLines = 2,
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }

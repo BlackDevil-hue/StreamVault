@@ -59,7 +59,8 @@ class LyricsRepository @Inject constructor(
             trackId = trackId,
             queryTitle = effectiveTitle,
             queryArtist = effectiveArtist,
-            durationMs = durationMs
+            durationMs = durationMs,
+            preserveOffset = true
         )
     }
 
@@ -82,17 +83,32 @@ class LyricsRepository @Inject constructor(
             trackId = trackId,
             queryTitle = cleanTitle,
             queryArtist = cleanArtist,
-            durationMs = durationMs
+            durationMs = durationMs,
+            preserveOffset = false
         )
+    }
+
+    suspend fun updateOffset(trackId: String, offsetMs: Long): LyricsUiState.Loaded? = withContext(Dispatchers.IO) {
+        val clamped = offsetMs.coerceIn(-30_000L, 30_000L)
+        audioLyricsDao.updateOffset(trackId, clamped)
+        audioLyricsDao.getByDownloadId(trackId)?.let { entity ->
+            LyricsUiState.Loaded(entity.toLyricsContent())
+        }
     }
 
     private suspend fun fetchAndCache(
         trackId: String,
         queryTitle: String,
         queryArtist: String?,
-        durationMs: Long?
+        durationMs: Long?,
+        preserveOffset: Boolean
     ): LyricsUiState {
         var sawNetworkError = false
+        val existingOffsetMs = if (preserveOffset) {
+            audioLyricsDao.getByDownloadId(trackId)?.offsetMs ?: 0L
+        } else {
+            0L
+        }
         val primaryArtist = queryArtist
             ?.substringBefore(',')
             ?.trim()
@@ -125,6 +141,7 @@ class LyricsRepository @Inject constructor(
                     candidateFromLrclib.syncedLyrics.isNullOrBlank() &&
                     candidateFromLrclib.plainLyrics.isNullOrBlank(),
                 sourceLabel = "LRCLIB",
+                offsetMs = existingOffsetMs,
                 fetchedAt = System.currentTimeMillis()
             )
             audioLyricsDao.upsert(entity)
@@ -149,6 +166,7 @@ class LyricsRepository @Inject constructor(
                     plainLyrics = plainOvh,
                     isInstrumental = false,
                     sourceLabel = "Lyrics.ovh",
+                    offsetMs = existingOffsetMs,
                     fetchedAt = System.currentTimeMillis()
                 )
                 audioLyricsDao.upsert(entity)
@@ -176,6 +194,10 @@ class LyricsRepository @Inject constructor(
         durationMs: Long?
     ): LrclibCandidate? {
         val durationSec = durationMs?.takeIf { it > 0L }?.div(1000L)
+        val candidates = mutableListOf<LrclibCandidate>()
+
+        fun hasValidSynced(candidate: LrclibCandidate): Boolean =
+            !candidate.syncedLyrics.isNullOrBlank() && LrcParser.parse(candidate.syncedLyrics).isNotEmpty()
 
         // 1. Exact lookup when artist is available
         if (!artist.isNullOrBlank()) {
@@ -191,14 +213,16 @@ class LyricsRepository @Inject constructor(
             executeGet(getUrl.toString())?.let { body ->
                 val obj = JSONObject(body)
                 val exact = parseLrclibObject(obj)
-                if (!exact.syncedLyrics.isNullOrBlank() || !exact.plainLyrics.isNullOrBlank()) {
+                if (hasValidSynced(exact) && durationSec != null) {
                     return exact
+                }
+                if (!exact.syncedLyrics.isNullOrBlank() || !exact.plainLyrics.isNullOrBlank() || exact.instrumental) {
+                    candidates += exact
                 }
             }
         }
 
         // 2. Search with track_name + primary artist
-        val candidates = mutableListOf<LrclibCandidate>()
         if (!primaryArtist.isNullOrBlank()) {
             val searchArtistUrl = "https://lrclib.net/api/search".toHttpUrl().newBuilder()
                 .addQueryParameter("track_name", title)
@@ -209,8 +233,8 @@ class LyricsRepository @Inject constructor(
             }
         }
 
-        // 3. Broad query fallback if structured search returned nothing
-        if (candidates.isEmpty()) {
+        // 3. Broad query fallback if no synced candidate was found yet
+        if (candidates.none(::hasValidSynced)) {
             val q = if (!primaryArtist.isNullOrBlank()) "$title $primaryArtist" else title
             val broadUrl = "https://lrclib.net/api/search".toHttpUrl().newBuilder()
                 .addQueryParameter("q", q)
@@ -221,7 +245,7 @@ class LyricsRepository @Inject constructor(
         }
 
         // 4. Title-only fallback if artist hint was inaccurate or noisy
-        if (candidates.isEmpty() && !primaryArtist.isNullOrBlank()) {
+        if (candidates.none(::hasValidSynced) && !primaryArtist.isNullOrBlank()) {
             val titleOnlyUrl = "https://lrclib.net/api/search".toHttpUrl().newBuilder()
                 .addQueryParameter("track_name", title)
                 .build()
@@ -301,7 +325,8 @@ class LyricsRepository @Inject constructor(
 
         return candidates.maxByOrNull { item ->
             var score = 0
-            if (!item.syncedLyrics.isNullOrBlank()) score += 1000
+            val hasValidSynced = !item.syncedLyrics.isNullOrBlank() && LrcParser.parse(item.syncedLyrics).isNotEmpty()
+            if (hasValidSynced) score += 1000
             else if (!item.plainLyrics.isNullOrBlank()) score += 300
             else if (item.instrumental) score += 50
 
@@ -355,7 +380,8 @@ class LyricsRepository @Inject constructor(
             syncedLines = parsedSynced,
             plainLines = plain,
             isInstrumental = isInstrumental,
-            sourceLabel = sourceLabel
+            sourceLabel = sourceLabel,
+            offsetMs = offsetMs
         )
     }
 

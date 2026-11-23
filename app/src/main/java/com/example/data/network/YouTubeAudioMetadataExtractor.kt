@@ -26,51 +26,146 @@ object YouTubeAudioMetadataExtractor {
         channel: String? = null,
         description: String? = null
     ): YouTubeAudioMetadata {
-        val structuredArtist = normalizeArtistList(
-            buildList {
+        val primaryStructured = normalizeArtistList(
+            candidates = buildList {
                 rawArtist?.let(::add)
                 addAll(rawArtists)
-                if (isEmpty()) rawAlbumArtist?.let(::add)
-                if (isEmpty()) rawCreator?.let(::add)
-                if (isEmpty()) addAll(rawCreators)
-            }
+            },
+            rejectLabels = true
         )
+        val fallbackStructured = if (primaryStructured.isEmpty()) {
+            normalizeArtistList(
+                candidates = buildList {
+                    rawAlbumArtist?.let(::add)
+                    rawCreator?.let(::add)
+                    addAll(rawCreators)
+                },
+                rejectLabels = true
+            )
+        } else {
+            // Preserve additional performers from albumArtist/creators when they overlap with
+            // primaryStructured (e.g., rawArtist has one singer while rawCreators lists all).
+            val overlappingExtra = normalizeArtistList(
+                candidates = buildList {
+                    rawAlbumArtist?.let(::add)
+                    rawCreator?.let(::add)
+                    addAll(rawCreators)
+                },
+                rejectLabels = true
+            ).takeIf { extra ->
+                val primaryText = primaryStructured.joinToString(", ")
+                extra.any { token -> artistsOverlap(token, primaryText) }
+            }.orEmpty()
+            (primaryStructured + overlappingExtra)
+        }
+        val structuredArtists = fallbackStructured.distinctBy { it.lowercase(Locale.US) }
+        val structuredArtistString = structuredArtists.takeIf { it.isNotEmpty() }?.joinToString(", ")
 
-        val (descTitle, descArtist) = extractFromDescription(description)
+        val descResult = extractFromDescription(description)
         val channelArtist = extractChannelArtist(uploader) ?: extractChannelArtist(channel)
 
         val cleanTrackTitle = rawTrack?.let { cleanSongTitle(it) }
         val cleanAltTitle = rawAltTitle?.let { cleanSongTitle(it) }
+        val knownArtistHint = listOfNotNull(
+            structuredArtistString,
+            descResult.artists.takeIf { it.isNotEmpty() }?.joinToString(", "),
+            channelArtist
+        ).joinToString(", ").takeIf { it.isNotBlank() }
+
         val parsedFromVideoTitle = parseFromVideoTitle(
             rawTitle = rawTitle,
-            knownTrackTitle = cleanTrackTitle?.title ?: cleanAltTitle?.title ?: descTitle,
-            knownArtistHint = structuredArtist ?: descArtist ?: channelArtist
+            knownTrackTitle = cleanTrackTitle?.title ?: cleanAltTitle?.title ?: descResult.title,
+            knownArtistHint = knownArtistHint
         )
 
-        val resolvedSongTitle = listOfNotNull(
+        val resolvedRawTitle = listOfNotNull(
             cleanTrackTitle?.title?.takeIf { it.isNotBlank() },
             cleanAltTitle?.title?.takeIf { it.isNotBlank() },
-            descTitle?.takeIf { it.isNotBlank() },
+            descResult.title?.takeIf { it.isNotBlank() },
             parsedFromVideoTitle.songTitle.takeIf { it.isNotBlank() },
             rawTitle.trim().takeIf { it.isNotBlank() }
         ).firstOrNull() ?: "YouTube audio"
 
-        val baseArtist = structuredArtist
-            ?: descArtist
-            ?: parsedFromVideoTitle.songArtist
-            ?: channelArtist
+        val resolvedSongTitle = formatAudioTitleCase(resolvedRawTitle)
+
+        // Merge artists cleanly across structured tags, description singer credits, title parsing,
+        // and featuring credits so co-singers are not dropped when one source only lists one artist.
+        val mergedBaseArtists = buildList {
+            addAll(structuredArtists)
+            addAll(descResult.artists)
+            val titleArtistTokens = parsedFromVideoTitle.songArtist?.let { candidate ->
+                normalizeArtistList(listOf(candidate), rejectLabels = true)
+            }.orEmpty()
+            if (isEmpty()) {
+                addAll(titleArtistTokens)
+            } else if (titleArtistTokens.isNotEmpty()) {
+                val combinedExisting = joinToString(", ")
+                if (titleArtistTokens.any { artistsOverlap(it, combinedExisting) }) {
+                    addAll(titleArtistTokens)
+                }
+            }
+            if (isEmpty() && channelArtist != null) {
+                addAll(normalizeArtistList(listOf(channelArtist), rejectLabels = true))
+            }
+        }
 
         val extraFeatured = (cleanTrackTitle?.featuredArtists.orEmpty() +
             cleanAltTitle?.featuredArtists.orEmpty() +
+            descResult.featuredArtists +
             parsedFromVideoTitle.featuredArtists)
             .distinctBy { it.lowercase(Locale.US) }
 
-        val finalArtist = mergeFeaturedArtists(baseArtist, extraFeatured)
+        val finalArtist = mergeFeaturedArtists(
+            baseArtists = mergedBaseArtists,
+            featured = extraFeatured
+        )
 
         return YouTubeAudioMetadata(
             songTitle = resolvedSongTitle,
             songArtist = finalArtist
         )
+    }
+
+    /**
+     * Converts an audio song title to Title Case (first letter of each word capitalized,
+     * remaining letters lowercase, e.g., "i love you" / "I LOVE YOU" -> "I Love You"),
+     * keeping apostrophe contractions/possessives natural ("DON'T STOP" -> "Don't Stop").
+     */
+    fun formatAudioTitleCase(raw: String): String {
+        val collapsed = raw.replace(MULTI_SPACE_REGEX, " ").trim()
+        if (collapsed.isBlank()) return collapsed
+        val sb = StringBuilder(collapsed.length)
+        var startOfWord = true
+        for (i in collapsed.indices) {
+            val ch = collapsed[i]
+            when {
+                ch.isLetter() -> {
+                    if (startOfWord) {
+                        sb.append(ch.titlecase(Locale.getDefault()))
+                        startOfWord = false
+                    } else {
+                        sb.append(ch.lowercase(Locale.getDefault()))
+                    }
+                }
+                ch.isDigit() -> {
+                    sb.append(ch)
+                    startOfWord = false
+                }
+                ch == '\'' || ch == '\u2019' -> {
+                    sb.append(ch)
+                    val prevIsWord = i > 0 && collapsed[i - 1].isLetterOrDigit()
+                    val nextIsLetter = i + 1 < collapsed.length && collapsed[i + 1].isLetter()
+                    if (!(prevIsWord && nextIsLetter)) {
+                        startOfWord = true
+                    }
+                }
+                else -> {
+                    sb.append(ch)
+                    startOfWord = true
+                }
+            }
+        }
+        return sb.toString()
     }
 
     private data class CleanedTitle(
@@ -85,12 +180,35 @@ object YouTubeAudioMetadataExtractor {
         val featuredArtists: List<String>
     )
 
+    private data class DescriptionExtractionResult(
+        val title: String?,
+        val artists: List<String>,
+        val featuredArtists: List<String>
+    )
+
+    private enum class CreditCategory {
+        NONE,
+        TITLE,
+        PRIMARY_SINGER,
+        SECONDARY_ARTIST,
+        OTHER
+    }
+
     private fun parseFromVideoTitle(
         rawTitle: String,
         knownTrackTitle: String?,
         knownArtistHint: String?
     ): TitleParseResult {
-        val primarySegment = pickPrimaryPipeSegment(rawTitle)
+        val segments = rawTitle.split(PIPE_OR_BULLET_REGEX)
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+        val primarySegment = pickPrimaryPipeSegment(segments, rawTitle)
+        val extraPipeArtists = collectExtraPipeArtists(
+            segments = segments,
+            primarySegment = primarySegment,
+            knownArtistHint = knownArtistHint
+        )
+
         val withoutTrailingNoiseDash = TRAILING_DASH_NOISE_REGEX.replace(primarySegment, "").trim()
         val workingTitle = withoutTrailingNoiseDash.ifBlank { primarySegment }
 
@@ -112,46 +230,59 @@ object YouTubeAudioMetadataExtractor {
                 val artistMatchesRight = knownArtistHint != null &&
                     artistsOverlap(rightClean.title, knownArtistHint)
 
-                val (songSide, artistSide) = when {
-                    trackMatchesRight && !trackMatchesLeft -> rightClean to leftClean.title
+                val (songSide, artistClean) = when {
+                    trackMatchesRight && !trackMatchesLeft -> rightClean to leftClean
                     trackMatchesLeft && !trackMatchesRight -> {
                         // Left is the song; only treat right as artist if it matches a known artist hint
                         // (otherwise right is often a movie/album subtitle like "Song - Movie Name").
-                        val candidateArtist = if (artistMatchesRight) rightClean.title else null
+                        val candidateArtist = if (artistMatchesRight) rightClean else null
                         leftClean to candidateArtist
                     }
-                    artistMatchesLeft && !artistMatchesRight -> rightClean to leftClean.title
-                    artistMatchesRight && !artistMatchesLeft -> leftClean to rightClean.title
-                    leftClean.hadVideoNoise && !rightClean.hadVideoNoise -> leftClean to rightClean.title
-                    else -> rightClean to leftClean.title
+                    artistMatchesLeft && !artistMatchesRight -> rightClean to leftClean
+                    artistMatchesRight && !artistMatchesLeft -> leftClean to rightClean
+                    leftClean.hadVideoNoise && !rightClean.hadVideoNoise -> leftClean to rightClean
+                    else -> rightClean to leftClean
                 }
 
-                val validatedArtist = artistSide
-                    ?.let(::normalizeArtistCandidate)
-                    ?.takeUnless(::isLikelyNoiseOrLabel)
+                val validatedArtistTokens = artistClean?.title
+                    ?.let { normalizeArtistList(listOf(it), strictChannelLabelFilter = true) }
+                    .orEmpty()
+                val combinedArtistList = (validatedArtistTokens + extraPipeArtists.coArtists)
+                    .distinctBy { it.lowercase(Locale.US) }
+                val validatedArtist = combinedArtistList.takeIf { it.isNotEmpty() }?.joinToString(", ")
+
+                val allFeatured = buildList {
+                    addAll(songSide.featuredArtists)
+                    if (artistClean != null && (validatedArtistTokens.isNotEmpty() || artistClean.featuredArtists.isNotEmpty())) {
+                        addAll(artistClean.featuredArtists)
+                    }
+                    addAll(extraPipeArtists.featuredArtists)
+                }.distinctBy { it.lowercase(Locale.US) }
 
                 if (songSide.title.isNotBlank()) {
                     return TitleParseResult(
                         songTitle = songSide.title,
                         songArtist = validatedArtist,
-                        featuredArtists = songSide.featuredArtists
+                        featuredArtists = allFeatured
                     )
                 }
             }
         }
 
         val cleaned = cleanSongTitle(workingTitle)
+        val extraArtistString = extraPipeArtists.coArtists
+            .distinctBy { it.lowercase(Locale.US) }
+            .takeIf { it.isNotEmpty() }
+            ?.joinToString(", ")
         return TitleParseResult(
             songTitle = cleaned.title.ifBlank { rawTitle.trim() },
-            songArtist = null,
-            featuredArtists = cleaned.featuredArtists
+            songArtist = extraArtistString,
+            featuredArtists = (cleaned.featuredArtists + extraPipeArtists.featuredArtists)
+                .distinctBy { it.lowercase(Locale.US) }
         )
     }
 
-    private fun pickPrimaryPipeSegment(rawTitle: String): String {
-        val segments = rawTitle.split(PIPE_OR_BULLET_REGEX)
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
+    private fun pickPrimaryPipeSegment(segments: List<String>, rawTitle: String): String {
         if (segments.isEmpty()) return rawTitle.trim()
         if (segments.size == 1) return segments.first()
         val first = segments.first()
@@ -160,6 +291,42 @@ object YouTubeAudioMetadataExtractor {
         } else {
             first
         }
+    }
+
+    private data class PipeArtistExtras(
+        val coArtists: List<String>,
+        val featuredArtists: List<String>
+    )
+
+    private fun collectExtraPipeArtists(
+        segments: List<String>,
+        primarySegment: String,
+        knownArtistHint: String?
+    ): PipeArtistExtras {
+        if (segments.size <= 1) return PipeArtistExtras(emptyList(), emptyList())
+        val coArtists = mutableListOf<String>()
+        val featured = mutableListOf<String>()
+        for (segment in segments) {
+            if (segment == primarySegment) continue
+            val leadingFeat = LEADING_FEAT_SEGMENT_REGEX.matchEntire(segment)
+            if (leadingFeat != null) {
+                featured += normalizeArtistList(listOf(leadingFeat.groupValues[1]), rejectLabels = true)
+                continue
+            }
+            val cleaned = cleanSongTitle(segment)
+            featured += cleaned.featuredArtists
+            if (!knownArtistHint.isNullOrBlank() &&
+                cleaned.title.isNotBlank() &&
+                !isLikelyNoiseOrLabel(cleaned.title) &&
+                artistsOverlap(cleaned.title, knownArtistHint)
+            ) {
+                coArtists += normalizeArtistList(listOf(cleaned.title), rejectLabels = true)
+            }
+        }
+        return PipeArtistExtras(
+            coArtists = coArtists.distinctBy { it.lowercase(Locale.US) },
+            featuredArtists = featured.distinctBy { it.lowercase(Locale.US) }
+        )
     }
 
     private fun cleanSongTitle(raw: String): CleanedTitle {
@@ -174,13 +341,19 @@ object YouTubeAudioMetadataExtractor {
         if (noTags.length != text.length) hadNoise = true
         text = noTags
 
-        // Extract and strip parenthetical/bracketed featuring credits
-        PAREN_FEAT_REGEX.findAll(text).forEach { match ->
-            extractArtistTokens(match.groupValues[1]).forEach { featured.add(it) }
-        }
-        val withoutParenFeat = PAREN_FEAT_REGEX.replace(text, " ").trim()
-        if (withoutParenFeat.length != text.length) hadNoise = true
-        text = withoutParenFeat
+        // Extract and strip parenthetical/bracketed featuring credits like (feat. X), (with Y)
+        text = PAREN_FEAT_REGEX.replace(text) { match ->
+            val wholeInner = match.value.trim('(', ')', '[', ']', ' ')
+            val artistPart = match.groupValues[1].trim()
+            if (artistPart.isBlank() || isVideoNoiseTag(wholeInner) || isVideoNoiseTag(artistPart)) {
+                hadNoise = true
+                " "
+            } else {
+                featured += normalizeArtistList(listOf(artistPart), rejectLabels = true)
+                hadNoise = true
+                " "
+            }
+        }.trim()
 
         // Strip noise blocks like (Official Video), [4K], (Full Song), (Lyric Video), (From "Movie")
         text = BRACKETED_BLOCK_REGEX.replace(text) { match ->
@@ -196,7 +369,7 @@ object YouTubeAudioMetadataExtractor {
         // Extract and strip inline "ft. Artist" / "feat. Artist"
         val inlineFeatMatch = INLINE_FEAT_REGEX.find(text)
         if (inlineFeatMatch != null) {
-            extractArtistTokens(inlineFeatMatch.groupValues[1]).forEach { featured.add(it) }
+            featured += normalizeArtistList(listOf(inlineFeatMatch.groupValues[1]), rejectLabels = true)
             text = text.substring(0, inlineFeatMatch.range.first).trim()
             hadNoise = true
         }
@@ -229,8 +402,10 @@ object YouTubeAudioMetadataExtractor {
         }
     }
 
-    private fun extractFromDescription(description: String?): Pair<String?, String?> {
-        if (description.isNullOrBlank()) return null to null
+    private fun extractFromDescription(description: String?): DescriptionExtractionResult {
+        if (description.isNullOrBlank()) {
+            return DescriptionExtractionResult(null, emptyList(), emptyList())
+        }
 
         val lines = description.lineSequence()
             .map { it.trim() }
@@ -240,7 +415,8 @@ object YouTubeAudioMetadataExtractor {
         //    "<Song Title> · <Artist 1> · <Artist 2>"
         val isAutoGenerated = description.contains("Provided to YouTube by", ignoreCase = true)
         var autoTitle: String? = null
-        var autoArtist: String? = null
+        val autoArtists = mutableListOf<String>()
+        val descFeatured = mutableListOf<String>()
         if (isAutoGenerated) {
             val dotLine = lines.firstOrNull { line ->
                 line.contains(" · ") &&
@@ -250,54 +426,101 @@ object YouTubeAudioMetadataExtractor {
             if (dotLine != null) {
                 val parts = dotLine.split(" · ").map { it.trim() }.filter { it.isNotBlank() }
                 if (parts.size >= 2) {
-                    autoTitle = cleanSongTitle(parts.first()).title.takeIf { it.isNotBlank() }
-                    autoArtist = normalizeArtistList(parts.drop(1))
+                    val cleanedAutoTitle = cleanSongTitle(parts.first())
+                    autoTitle = cleanedAutoTitle.title.takeIf { it.isNotBlank() }
+                    descFeatured += cleanedAutoTitle.featuredArtists
+                    autoArtists += normalizeArtistList(parts.drop(1), rejectLabels = true)
                 }
             }
         }
 
-        // 2. Structured credit lines (Song: ..., Singer: ..., Artist: ..., Vocals: ...)
+        // 2. Structured credit lines (Song: ..., Singer: ..., Male Singer: ..., Female Singer: ..., Artist: ..., Vocals: ...)
+        //    Supports multiple lines and multiple pipe/bullet-separated segments per line.
         var creditTitle: String? = null
-        var primarySingerArtist: String? = null
-        var secondaryArtist: String? = null
+        val primarySingerArtists = mutableListOf<String>()
+        val secondaryArtists = mutableListOf<String>()
 
-        for (line in lines.take(120)) {
+        for (line in lines.take(200)) {
             if (line.isBlank() || line.startsWith("http", ignoreCase = true)) continue
-            val match = CREDIT_LINE_REGEX.matchEntire(line) ?: continue
-            val key = match.groupValues[1].trim().lowercase(Locale.US)
-                .replace(MULTI_SPACE_REGEX, " ")
-            val rawValue = match.groupValues[2]
-                .split(CREDIT_VALUE_SEPARATOR_REGEX)
-                .firstOrNull()
-                ?.trim()
-                .orEmpty()
-            if (rawValue.isBlank() || rawValue.startsWith("http", ignoreCase = true)) continue
+            val segments = line.split(CREDIT_VALUE_SEPARATOR_REGEX)
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+            var activeCategory = CreditCategory.NONE
 
-            when (key) {
-                in SONG_TITLE_CREDIT_KEYS -> {
-                    if (creditTitle == null) {
-                        val cleaned = cleanSongTitle(rawValue).title
-                        if (cleaned.isNotBlank() && !isPlaceholderValue(cleaned)) {
-                            creditTitle = cleaned
+            for (rawSegment in segments) {
+                if (rawSegment.startsWith("http", ignoreCase = true)) {
+                    activeCategory = CreditCategory.NONE
+                    continue
+                }
+                val cleanSegment = rawSegment.replace(LEADING_DECORATION_REGEX, "").trim()
+                if (cleanSegment.isBlank()) continue
+
+                val match = CREDIT_LINE_REGEX.matchEntire(cleanSegment)
+                if (match != null) {
+                    val key = match.groupValues[1].trim().lowercase(Locale.US)
+                        .replace(MULTI_SPACE_REGEX, " ")
+                    val rawValue = match.groupValues[2].trim()
+                    if (rawValue.isBlank() || rawValue.startsWith("http", ignoreCase = true)) {
+                        activeCategory = CreditCategory.NONE
+                        continue
+                    }
+
+                    activeCategory = when (key) {
+                        in SONG_TITLE_CREDIT_KEYS -> {
+                            if (creditTitle == null) {
+                                val cleaned = cleanSongTitle(rawValue)
+                                if (cleaned.title.isNotBlank() && !isPlaceholderValue(cleaned.title)) {
+                                    creditTitle = cleaned.title
+                                    descFeatured += cleaned.featuredArtists
+                                }
+                            }
+                            CreditCategory.TITLE
                         }
+                        in PRIMARY_SINGER_CREDIT_KEYS -> {
+                            primarySingerArtists += normalizeArtistList(
+                                candidates = listOf(rawValue),
+                                rejectLabels = true
+                            )
+                            CreditCategory.PRIMARY_SINGER
+                        }
+                        in SECONDARY_ARTIST_CREDIT_KEYS -> {
+                            secondaryArtists += normalizeArtistList(
+                                candidates = listOf(rawValue),
+                                rejectLabels = true
+                            )
+                            CreditCategory.SECONDARY_ARTIST
+                        }
+                        else -> CreditCategory.OTHER
                     }
-                }
-                in PRIMARY_SINGER_CREDIT_KEYS -> {
-                    if (primarySingerArtist == null) {
-                        primarySingerArtist = normalizeArtistList(extractArtistTokens(rawValue))
-                    }
-                }
-                in SECONDARY_ARTIST_CREDIT_KEYS -> {
-                    if (secondaryArtist == null) {
-                        secondaryArtist = normalizeArtistList(extractArtistTokens(rawValue))
+                } else {
+                    // Same-line pipe/bullet continuation, e.g., "Singer : Arijit Singh | Shreya Ghoshal"
+                    when (activeCategory) {
+                        CreditCategory.PRIMARY_SINGER -> {
+                            primarySingerArtists += normalizeArtistList(
+                                candidates = listOf(cleanSegment),
+                                rejectLabels = true
+                            )
+                        }
+                        CreditCategory.SECONDARY_ARTIST -> {
+                            secondaryArtists += normalizeArtistList(
+                                candidates = listOf(cleanSegment),
+                                rejectLabels = true
+                            )
+                        }
+                        else -> Unit
                     }
                 }
             }
         }
 
         val resolvedTitle = autoTitle ?: creditTitle
-        val resolvedArtist = autoArtist ?: primarySingerArtist ?: secondaryArtist
-        return resolvedTitle to resolvedArtist
+        val combinedArtists = (autoArtists + primarySingerArtists + secondaryArtists)
+            .distinctBy { it.lowercase(Locale.US) }
+        return DescriptionExtractionResult(
+            title = resolvedTitle,
+            artists = combinedArtists,
+            featuredArtists = descFeatured.distinctBy { it.lowercase(Locale.US) }
+        )
     }
 
     private fun extractChannelArtist(rawChannel: String?): String? {
@@ -322,17 +545,32 @@ object YouTubeAudioMetadataExtractor {
         return candidate.takeUnless(::isLikelyLabelOrAggregator)
     }
 
-    private fun normalizeArtistList(candidates: List<String>): String? {
-        val tokens = candidates
+    private fun normalizeArtistList(
+        candidates: List<String>,
+        rejectLabels: Boolean = false,
+        strictChannelLabelFilter: Boolean = false
+    ): List<String> {
+        return candidates
             .flatMap(::extractArtistTokens)
             .mapNotNull(::normalizeArtistCandidate)
+            .filter { candidate ->
+                when {
+                    strictChannelLabelFilter -> !isLikelyLabelOrAggregator(candidate)
+                    rejectLabels -> !isLikelyRecordLabelOnly(candidate)
+                    else -> true
+                }
+            }
             .distinctBy { it.lowercase(Locale.US) }
-        return tokens.takeIf { it.isNotEmpty() }?.joinToString(", ")
     }
 
-    private fun mergeFeaturedArtists(baseArtist: String?, featured: List<String>): String? {
-        val baseTokens = baseArtist?.let(::extractArtistTokens)?.mapNotNull(::normalizeArtistCandidate).orEmpty()
-        val combined = (baseTokens + featured.mapNotNull(::normalizeArtistCandidate))
+    private fun mergeFeaturedArtists(baseArtists: List<String>, featured: List<String>): String? {
+        val normalizedBase = baseArtists
+            .flatMap(::extractArtistTokens)
+            .mapNotNull(::normalizeArtistCandidate)
+        val normalizedFeatured = featured
+            .flatMap(::extractArtistTokens)
+            .mapNotNull(::normalizeArtistCandidate)
+        val combined = (normalizedBase + normalizedFeatured)
             .distinctBy { it.lowercase(Locale.US) }
         return combined.takeIf { it.isNotEmpty() }?.joinToString(", ")
     }
@@ -368,6 +606,14 @@ object YouTubeAudioMetadataExtractor {
     private fun isLikelyNoiseOrLabel(value: String): Boolean =
         isLikelyLabelOrAggregator(value) || isVideoNoiseTag(value)
 
+    private fun isLikelyRecordLabelOnly(name: String): Boolean {
+        val lower = name.lowercase(Locale.US).trim()
+        if (LABEL_SUBSTRINGS.any { lower.contains(it) }) return true
+        return EXPLICIT_LABEL_WORDS.any { word ->
+            Regex("\\b${Regex.escape(word)}\\b").containsMatchIn(lower)
+        }
+    }
+
     private fun isLikelyLabelOrAggregator(name: String): Boolean {
         val lower = name.lowercase(Locale.US).trim()
         if (LABEL_SUBSTRINGS.any { lower.contains(it) }) return true
@@ -383,11 +629,17 @@ object YouTubeAudioMetadataExtractor {
     }
 
     private fun artistsOverlap(candidate: String, artistList: String): Boolean {
-        val candNorm = candidate.lowercase(Locale.US).replace(NON_ALNUM_REGEX, "")
-        if (candNorm.isEmpty()) return false
-        return extractArtistTokens(artistList).any { token ->
-            val tokNorm = token.lowercase(Locale.US).replace(NON_ALNUM_REGEX, "")
-            tokNorm.isNotEmpty() && (candNorm == tokNorm || candNorm.contains(tokNorm) || tokNorm.contains(candNorm))
+        val candidateTokens = extractArtistTokens(candidate)
+            .map { it.lowercase(Locale.US).replace(NON_ALNUM_REGEX, "") }
+            .filter { it.isNotEmpty() }
+        val targetTokens = extractArtistTokens(artistList)
+            .map { it.lowercase(Locale.US).replace(NON_ALNUM_REGEX, "") }
+            .filter { it.isNotEmpty() }
+        if (candidateTokens.isEmpty() || targetTokens.isEmpty()) return false
+        return candidateTokens.any { candNorm ->
+            targetTokens.any { tokNorm ->
+                candNorm == tokNorm || candNorm.contains(tokNorm) || tokNorm.contains(candNorm)
+            }
         }
     }
 
@@ -399,11 +651,15 @@ object YouTubeAudioMetadataExtractor {
     )
     private val TRAILING_HASHTAGS_REGEX = Regex("(?:\\s+#\\S+)+\\s*$")
     private val PAREN_FEAT_REGEX = Regex(
-        "[(\\[](?:feat\\.?|ft\\.?|featuring)\\s+([^)\\]]+)[)\\]]",
+        "[(\\[]\\s*(?:feat\\.?|ft\\.?|featuring|with|w/)\\s+([^)\\]]+)[)\\]]",
+        RegexOption.IGNORE_CASE
+    )
+    private val LEADING_FEAT_SEGMENT_REGEX = Regex(
+        "^(?:feat\\.?|ft\\.?|featuring|with|w/)\\s+(.+)$",
         RegexOption.IGNORE_CASE
     )
     private val INLINE_FEAT_REGEX = Regex(
-        "\\s+(?:feat\\.?|ft\\.?|featuring)\\s+(.+)$",
+        "\\s+(?:feat\\.?|ft\\.?|featuring|w/)\\s+(.+)$",
         RegexOption.IGNORE_CASE
     )
     private val BRACKETED_BLOCK_REGEX = Regex("[(\\[【]([^)\\]】]+)[)\\]】]")
@@ -418,12 +674,16 @@ object YouTubeAudioMetadataExtractor {
         "\\s*(?:[-–—]\\s*)?official(?:\\s+channel)?\\s*$",
         RegexOption.IGNORE_CASE
     )
+    private val LEADING_DECORATION_REGEX = Regex("^[^A-Za-z0-9\\[]+")
     private val CREDIT_LINE_REGEX = Regex(
-        "^\\s*(?:[#*•\\-]+\\s*)?([A-Za-z][A-Za-z\\s()/&'.]{1,28}?)\\s*(?:[:\\-–—~]+)\\s*(.+?)\\s*$"
+        "^\\s*(?:[#*•\\-]+\\s*)?([A-Za-z][A-Za-z\\s()/&'.]{1,28}?)\\s*(?:[:\\-–—~=]+)\\s*(.+?)\\s*$"
     )
-    private val CREDIT_VALUE_SEPARATOR_REGEX = Regex("\\s*[|•]\\s*|\\s+//\\s+")
-    private val FEAT_PREFIX_REGEX = Regex("\\b(?:feat\\.?|ft\\.?|featuring)\\b", RegexOption.IGNORE_CASE)
-    private val ARTIST_SPLIT_REGEX = Regex("\\s*(?:,|;|\\band\\b|&|\\s+/\\s+)\\s*", RegexOption.IGNORE_CASE)
+    private val CREDIT_VALUE_SEPARATOR_REGEX = Regex("\\s*[|¦•]\\s*|\\s+//\\s+")
+    private val FEAT_PREFIX_REGEX = Regex("\\b(?:feat\\.?|ft\\.?|featuring)\\b|\\bw/", RegexOption.IGNORE_CASE)
+    private val ARTIST_SPLIT_REGEX = Regex(
+        "\\s*(?:,|;|\\band\\b|&|\\s+/\\s+|\\s+[x×]\\s+)\\s*|(?<=[a-z])/(?=[A-Z])",
+        RegexOption.IGNORE_CASE
+    )
     private val NON_ALNUM_REGEX = Regex("[^a-z0-9]")
 
     private val SONG_TITLE_CREDIT_KEYS = setOf(
@@ -431,11 +691,14 @@ object YouTubeAudioMetadataExtractor {
     )
     private val PRIMARY_SINGER_CREDIT_KEYS = setOf(
         "singer", "singers", "singer(s)",
-        "vocal", "vocals", "vocalist", "vocalists", "vocalist(s)",
-        "sung by", "performed by", "voice"
+        "male singer", "female singer", "co-singer", "co singer", "playback singer",
+        "lead singer", "lead vocal", "lead vocals", "lead vocalist",
+        "vocal", "vocals", "vocalist", "vocalists", "vocalist(s)", "backing vocals",
+        "sung by", "performed by", "voice", "singing"
     )
     private val SECONDARY_ARTIST_CREDIT_KEYS = setOf(
-        "artist", "artists", "artist(s)", "featuring", "ft"
+        "artist", "artists", "artist(s)", "featuring", "feat", "feat.", "ft", "ft.",
+        "rap", "rapper", "rap by", "duet"
     )
 
     private val NOISE_KEYWORDS = listOf(
@@ -456,6 +719,11 @@ object YouTubeAudioMetadataExtractor {
         "spinnin", "monstercat", "nocopyrightsounds", "trap nation", "chill nation",
         "bass nation", "mrsuicidesheep", "majestic casual", "lyrical lemonade",
         "colorsxstudios", "vevo"
+    )
+
+    private val EXPLICIT_LABEL_WORDS = listOf(
+        "records", "entertainment", "productions", "films", "jukebox",
+        "playlist", "compilation", "soundtrack", "vevo"
     )
 
     private val LABEL_WORDS = listOf(

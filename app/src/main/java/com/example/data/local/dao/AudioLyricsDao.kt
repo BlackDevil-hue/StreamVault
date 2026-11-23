@@ -18,6 +18,9 @@ interface AudioLyricsDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: AudioLyricsEntity)
 
+    @Query("UPDATE audio_lyrics SET offsetMs = :offsetMs WHERE downloadId = :downloadId")
+    suspend fun updateOffset(downloadId: String, offsetMs: Long)
+
     @Query("DELETE FROM audio_lyrics WHERE downloadId = :downloadId")
     suspend fun deleteByDownloadId(downloadId: String)
 }

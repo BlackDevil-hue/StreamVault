@@ -161,18 +161,38 @@ class YouTubeExtractor @Inject constructor(
 
         try {
             youtubeDlRuntime.ensureLatestYoutubeDl()
-            val request = YoutubeDLRequest("https://www.youtube.com/watch?v=$videoId").apply {
-                addOption("--dump-single-json")
-                addOption("--skip-download")
-                addOption("--no-playlist")
-                addOption("--no-warnings")
-                addOption("--extractor-args", YoutubeDlRuntime.YOUTUBE_EXTRACTOR_ARGS)
+            val targetUrl = "https://www.youtube.com/watch?v=$videoId"
+
+            fun runAttempt(extractorArgs: String, useCookies: Boolean): Pair<String, Boolean> {
+                val request = YoutubeDLRequest(targetUrl).apply {
+                    addOption("--dump-single-json")
+                    addOption("--skip-download")
+                    addOption("--no-playlist")
+                    addOption("--no-warnings")
+                    addOption("--extractor-args", extractorArgs)
+                }
+                val cookieFile = if (useCookies) youtubeCookieProvider.attachCookies(request) else null
+                return try {
+                    YoutubeDL.getInstance().execute(request).out to (cookieFile != null)
+                } finally {
+                    cookieFile?.delete()
+                }
             }
-            val cookieFile = youtubeCookieProvider.attachCookies(request)
+
             val output = try {
-                YoutubeDL.getInstance().execute(request).out
-            } finally {
-                cookieFile?.delete()
+                runAttempt(YoutubeDlRuntime.YOUTUBE_EXTRACTOR_ARGS, useCookies = true).first
+            } catch (primaryError: Exception) {
+                if (!YoutubeDlRuntime.isBotVerificationError(primaryError.message.orEmpty())) {
+                    throw primaryError
+                }
+                try {
+                    runAttempt(YoutubeDlRuntime.YOUTUBE_COOKIES_FALLBACK_ARGS, useCookies = true).first
+                } catch (cookieFallbackError: Exception) {
+                    if (!YoutubeDlRuntime.isBotVerificationError(cookieFallbackError.message.orEmpty())) {
+                        throw cookieFallbackError
+                    }
+                    runAttempt(YoutubeDlRuntime.YOUTUBE_COOKIELESS_FALLBACK_ARGS, useCookies = false).first
+                }
             }
             val info = JSONObject(output)
             ExtractionOutcome.Success(parseVideoAnalysis(url, videoId, info))
@@ -180,10 +200,7 @@ class YouTubeExtractor @Inject constructor(
             val errorText = e.message.orEmpty()
             val detail = errorText.lineSequence().firstOrNull()?.take(180)
                 ?: "yt-dlp could not analyze this video."
-            val userMessage = if (
-                errorText.contains("sign in to confirm", ignoreCase = true) ||
-                errorText.contains("not a bot", ignoreCase = true)
-            ) {
+            val userMessage = if (YoutubeDlRuntime.isBotVerificationError(errorText)) {
                 "YouTube requires verification for this request. Open YouTube in Browser mode, sign in if prompted, then retry analysis."
             } else {
                 "YouTube extraction failed: $detail"

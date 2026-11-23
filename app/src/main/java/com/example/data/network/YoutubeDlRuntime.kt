@@ -56,5 +56,17 @@ class YoutubeDlRuntime @Inject constructor(
             // Let the current yt-dlp release choose its supported clients. A fixed list of
             // mobile/embedded clients can yield SABR-only responses with no downloadable URLs.
             "youtube:player_client=default"
+
+        const val YOUTUBE_COOKIES_FALLBACK_ARGS =
+            "youtube:player_client=tv,mweb"
+
+        const val YOUTUBE_COOKIELESS_FALLBACK_ARGS =
+            "youtube:player_client=android_vr,tv_simply"
+
+        fun isBotVerificationError(errorText: String): Boolean {
+            val lower = errorText.lowercase()
+            return lower.contains("sign in to confirm") ||
+                lower.contains("not a bot")
+        }
     }
 }

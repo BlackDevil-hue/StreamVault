@@ -117,7 +117,8 @@ class DownloadOptionsViewModel @Inject constructor(
         }
         val suggestedName = preferred?.let { option ->
             val rawName = if (option.isAudioOnly) {
-                result.audioTitle?.takeIf { it.isNotBlank() } ?: result.title
+                result.audioTitle?.takeIf { it.isNotBlank() }
+                    ?: com.example.data.network.YouTubeAudioMetadataExtractor.formatAudioTitleCase(result.title)
             } else {
                 "${result.title}_${option.qualityLabel}"
             }
@@ -146,7 +147,8 @@ class DownloadOptionsViewModel @Inject constructor(
         viewModelScope.launch {
             val duplicate = downloadRepository.findDuplicateCompleted(analysis.normalizedUrl, option.streamUrl)
             val rawName = if (option.isAudioOnly) {
-                analysis.audioTitle?.takeIf { it.isNotBlank() } ?: analysis.title
+                analysis.audioTitle?.takeIf { it.isNotBlank() }
+                    ?: com.example.data.network.YouTubeAudioMetadataExtractor.formatAudioTitleCase(analysis.title)
             } else {
                 "${analysis.title}_${option.qualityLabel}"
             }
