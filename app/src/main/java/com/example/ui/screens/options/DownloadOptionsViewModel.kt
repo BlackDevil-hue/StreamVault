@@ -115,10 +115,15 @@ class DownloadOptionsViewModel @Inject constructor(
         val duplicate = preferred?.let {
             downloadRepository.findDuplicateCompleted(result.normalizedUrl, it.streamUrl)
         }
-        val suggestedName = preferred?.let {
+        val suggestedName = preferred?.let { option ->
+            val rawName = if (option.isAudioOnly) {
+                result.audioTitle?.takeIf { it.isNotBlank() } ?: result.title
+            } else {
+                "${result.title}_${option.qualityLabel}"
+            }
             urlValidator.sanitizeFileName(
-                rawTitle = "${result.title}_${it.qualityLabel}",
-                extension = it.format.lowercase()
+                rawTitle = rawName,
+                extension = option.format.lowercase()
             )
         } ?: ""
 
@@ -140,8 +145,13 @@ class DownloadOptionsViewModel @Inject constructor(
         val analysis = _uiState.value.analysis ?: return
         viewModelScope.launch {
             val duplicate = downloadRepository.findDuplicateCompleted(analysis.normalizedUrl, option.streamUrl)
+            val rawName = if (option.isAudioOnly) {
+                analysis.audioTitle?.takeIf { it.isNotBlank() } ?: analysis.title
+            } else {
+                "${analysis.title}_${option.qualityLabel}"
+            }
             val suggestedName = urlValidator.sanitizeFileName(
-                rawTitle = "${analysis.title}_${option.qualityLabel}",
+                rawTitle = rawName,
                 extension = option.format.lowercase()
             )
             _uiState.update {
@@ -205,6 +215,7 @@ class DownloadOptionsViewModel @Inject constructor(
         return videoStreams
             .filter { (it.resolutionHeight ?: 0) <= targetHeight }
             .maxByOrNull { it.resolutionHeight ?: 0 }
-            ?: videoStreams.last()
+            ?: videoStreams.minByOrNull { it.resolutionHeight ?: Int.MAX_VALUE }
+            ?: videoStreams.first()
     }
 }

@@ -18,7 +18,8 @@ internal class YtDlpProgressTracker(
         val totalBytes: Long,
         val speedBytesPerSec: Long,
         val etaSeconds: Long,
-        val finalizing: Boolean
+        val finalizing: Boolean,
+        val detectedFormatSpec: String? = null
     )
 
     private data class TrackProgress(
@@ -43,26 +44,41 @@ internal class YtDlpProgressTracker(
     private val initialBytes = initialDownloadedBytes.coerceAtLeast(0L)
     private var activeTrackKey = "default"
     private var expectedTrackCount = 1
+    private var detectedFormatSpec: String? = null
     private var hasObservedTrackTotal = false
+    private var hasEnteredPostProcessing = false
     private var lastOverallPercent = (initialProgressPercent ?: 0).coerceIn(0, 99)
     private var lastSpeed = 0L
 
     @Synchronized
     fun update(callbackPercent: Float, callbackEta: Long, line: String): Snapshot {
         formatInfoPattern.find(line)?.groupValues?.getOrNull(1)?.let { formatSpec ->
+            detectedFormatSpec = formatSpec
             expectedTrackCount = if (formatSpec.contains('+')) 2 else 1
         }
 
-        val destination = destinationPattern.find(line)?.groupValues?.getOrNull(1)
-            ?.trim()?.trim('"', '\'')
-        if (!destination.isNullOrBlank()) {
+        val isDownloadLine = line.contains("[download]", ignoreCase = true)
+        val destination = if (isDownloadLine) {
+            destinationPattern.find(line)?.groupValues?.getOrNull(1)
+                ?.trim()?.trim('"', '\'')
+        } else {
+            null
+        }
+        val isThumbnailDestination = destination != null && isImagePath(destination)
+        if (!destination.isNullOrBlank() && !isThumbnailDestination) {
             activeTrackKey = destination
             tracks.getOrPut(activeTrackKey) { TrackProgress() }
+            lastSpeed = 0L
         }
 
-        val alreadyDownloadedPath = alreadyDownloadedPattern.find(line)?.groupValues?.getOrNull(1)
-            ?.trim()?.trim('"', '\'')
-        if (!alreadyDownloadedPath.isNullOrBlank()) {
+        val alreadyDownloadedPath = if (isDownloadLine) {
+            alreadyDownloadedPattern.find(line)?.groupValues?.getOrNull(1)
+                ?.trim()?.trim('"', '\'')
+        } else {
+            null
+        }
+        val isThumbnailAlreadyDownloaded = alreadyDownloadedPath != null && isImagePath(alreadyDownloadedPath)
+        if (!alreadyDownloadedPath.isNullOrBlank() && !isThumbnailAlreadyDownloaded) {
             val fileLen = runCatching { fileLengthProvider(alreadyDownloadedPath) }.getOrDefault(0L)
                 .coerceAtLeast(0L)
             val track = tracks.getOrPut(alreadyDownloadedPath) { TrackProgress() }
@@ -72,11 +88,8 @@ internal class YtDlpProgressTracker(
             }
             track.percent = 100.0
             activeTrackKey = alreadyDownloadedPath
+            lastSpeed = 0L
         }
-
-        val linePercent = percentPattern.find(line)?.groupValues?.getOrNull(1)?.toDoubleOrNull()
-        val percent = (linePercent ?: callbackPercent.toDouble()).coerceIn(0.0, 100.0)
-        val isDownloadLine = line.contains("[download]", ignoreCase = true)
 
         val sizeMatch = sizePattern.find(line)
         val isApproxSize = sizeMatch?.groupValues?.getOrNull(1)?.isNotEmpty() == true
@@ -86,7 +99,29 @@ internal class YtDlpProgressTracker(
             }
         } ?: 0L
 
-        if (isDownloadLine) {
+        val linePercent = if (isDownloadLine) {
+            percentPattern.find(line)?.groupValues?.getOrNull(1)?.toDoubleOrNull()
+        } else {
+            null
+        }
+        val resumeMatch = if (isDownloadLine) resumeBytePattern.find(line) else null
+        val downloadedOnlyMatch = if (isDownloadLine) downloadedOnlyPattern.find(line) else null
+
+        // Never let stale callbackPercent from a finished Track 1 leak onto Destination,
+        // Resuming, already-downloaded, or status lines of Track 2.
+        val effectivePercent = when {
+            linePercent != null -> linePercent.coerceIn(0.0, 100.0)
+            isDownloadLine &&
+                destination == null &&
+                alreadyDownloadedPath == null &&
+                resumeMatch == null &&
+                downloadedOnlyMatch == null &&
+                sizeMatch != null &&
+                callbackPercent >= 0f -> callbackPercent.toDouble().coerceIn(0.0, 100.0)
+            else -> null
+        }
+
+        if (isDownloadLine && !isThumbnailDestination && !isThumbnailAlreadyDownloaded) {
             val track = tracks.getOrPut(activeTrackKey) { TrackProgress() }
             if (lineTotal > 0L) {
                 if (isApproxSize) {
@@ -97,13 +132,14 @@ internal class YtDlpProgressTracker(
                 hasObservedTrackTotal = true
             }
 
-            resumeBytePattern.find(line)?.groupValues?.getOrNull(1)?.toLongOrNull()?.let { resumedByte ->
+            resumeMatch?.groupValues?.getOrNull(1)?.toLongOrNull()?.let { resumedByte ->
                 if (resumedByte > 0L) {
                     track.directDownloadedBytes = maxOf(track.directDownloadedBytes, resumedByte)
                 }
+                lastSpeed = 0L
             }
 
-            downloadedOnlyPattern.find(line)?.let { match ->
+            downloadedOnlyMatch?.let { match ->
                 val value = match.groupValues.getOrNull(1)?.replace(",", "")?.toDoubleOrNull()
                 if (value != null) {
                     val downloadedNow = value.times(unitMultiplier(match.groupValues[2])).toLong().coerceAtLeast(0L)
@@ -111,18 +147,26 @@ internal class YtDlpProgressTracker(
                 }
             }
 
-            if (linePercent != null || callbackPercent >= 0f) {
+            if (effectivePercent != null) {
                 // Percentages can reset if yt-dlp retries; keep per-track progress monotonic.
-                track.percent = maxOf(track.percent, percent)
+                track.percent = maxOf(track.percent, effectivePercent)
             }
 
-            speedPattern.find(line)?.let { match ->
-                val value = match.groupValues.getOrNull(1)?.replace(",", "")?.toDoubleOrNull()
-                if (value != null) {
-                    lastSpeed = value.times(unitMultiplier(match.groupValues[2])).toLong().coerceAtLeast(0L)
+            val speedMatch = speedPattern.find(line)
+            when {
+                trackCompletedInTimePattern.containsMatchIn(line) ||
+                    line.contains("Unknown speed", ignoreCase = true) -> {
+                    lastSpeed = 0L
+                }
+                speedMatch != null -> {
+                    val value = speedMatch.groupValues.getOrNull(1)?.replace(",", "")?.toDoubleOrNull()
+                    if (value != null) {
+                        lastSpeed = value.times(unitMultiplier(speedMatch.groupValues[2])).toLong().coerceAtLeast(0L)
+                    }
                 }
             }
         } else if (isPostProcessingLine(line)) {
+            hasEnteredPostProcessing = true
             lastSpeed = 0L
         }
 
@@ -131,9 +175,12 @@ internal class YtDlpProgressTracker(
         val downloaded = if (trackDownloaded > 0L) trackDownloaded else initialBytes
         val tracksWithTotal = tracks.values.count { it.effectiveTotalBytes > 0L }
 
+        val hasSaneExpectedBytes = expectedBytes > measuredTotal &&
+            (measuredTotal <= 0L || expectedBytes <= measuredTotal * 2L)
+
         val total = when {
-            hasObservedTrackTotal && expectedTrackCount > tracksWithTotal && expectedBytes > measuredTotal -> {
-                expectedBytes
+            hasObservedTrackTotal && expectedTrackCount > tracksWithTotal && hasSaneExpectedBytes -> {
+                maxOf(expectedBytes, downloaded)
             }
             hasObservedTrackTotal -> maxOf(measuredTotal, downloaded)
             expectedBytes > 0L -> maxOf(expectedBytes, downloaded)
@@ -142,16 +189,25 @@ internal class YtDlpProgressTracker(
 
         val transferPercent = if (
             expectedTrackCount > tracksWithTotal &&
-            hasObservedTrackTotal &&
-            expectedBytes <= measuredTotal
+            hasObservedTrackTotal
         ) {
-            // Track 1 of a multi-track download is still running; reserve headroom for audio track.
-            val unscaled = if (total > 0L) (downloaded * 90.0 / total).toInt() else (percent * 0.90).toInt()
-            unscaled.coerceIn(0, 90)
+            if (hasSaneExpectedBytes && total > measuredTotal) {
+                (downloaded * 100.0 / total).toInt().coerceIn(0, 95)
+            } else {
+                // Track 1 of a multi-track download is still running; reserve headroom for audio track.
+                val unscaled = if (total > 0L) {
+                    (downloaded * 90.0 / total).toInt()
+                } else if (effectivePercent != null) {
+                    (effectivePercent * 0.90).toInt()
+                } else {
+                    lastOverallPercent
+                }
+                unscaled.coerceIn(0, 90)
+            }
         } else {
             when {
                 total > 0L -> (downloaded * 100.0 / total).toInt()
-                linePercent != null || callbackPercent >= 0f -> percent.toInt()
+                effectivePercent != null -> effectivePercent.toInt()
                 else -> lastOverallPercent
             }.coerceIn(0, 99)
         }
@@ -159,11 +215,13 @@ internal class YtDlpProgressTracker(
 
         val eta = if (lastSpeed > 0L && total > downloaded) {
             (total - downloaded) / lastSpeed
-        } else {
+        } else if (lastSpeed > 0L) {
             callbackEta.coerceAtLeast(0L)
+        } else {
+            0L
         }
 
-        val finalizing = !isDownloadLine && (percent >= 98.0 || isPostProcessingLine(line))
+        val finalizing = hasEnteredPostProcessing
         if (finalizing) lastSpeed = 0L
 
         return Snapshot(
@@ -172,8 +230,14 @@ internal class YtDlpProgressTracker(
             totalBytes = total,
             speedBytesPerSec = lastSpeed,
             etaSeconds = if (finalizing) 0L else eta,
-            finalizing = finalizing
+            finalizing = finalizing,
+            detectedFormatSpec = detectedFormatSpec
         )
+    }
+
+    private fun isImagePath(path: String): Boolean {
+        val ext = path.substringAfterLast('.', "").lowercase()
+        return ext in setOf("jpg", "jpeg", "png", "webp", "avif")
     }
 
     private fun isPostProcessingLine(line: String): Boolean =
@@ -181,6 +245,7 @@ internal class YtDlpProgressTracker(
             line.contains("extractaudio", ignoreCase = true) ||
             line.contains("[merger]", ignoreCase = true) ||
             line.contains("[embedthumbnail]", ignoreCase = true) ||
+            line.contains("[thumbnailsconvertor]", ignoreCase = true) ||
             line.contains("[metadata]", ignoreCase = true) ||
             line.contains("[fixup", ignoreCase = true) ||
             line.contains("size=", ignoreCase = true)
@@ -199,12 +264,13 @@ internal class YtDlpProgressTracker(
 
     private companion object {
         val formatInfoPattern = Regex("Downloading \\d+ format\\(s\\):\\s*(\\S+)", RegexOption.IGNORE_CASE)
-        val destinationPattern = Regex("Destination:\\s*(.+)$", RegexOption.IGNORE_CASE)
+        val destinationPattern = Regex("\\[download]\\s+Destination:\\s*(.+)$", RegexOption.IGNORE_CASE)
         val alreadyDownloadedPattern = Regex("\\[download]\\s+(.+?)\\s+has already been downloaded", RegexOption.IGNORE_CASE)
         val resumeBytePattern = Regex("\\[download]\\s+Resuming download at byte\\s+(\\d+)", RegexOption.IGNORE_CASE)
         val percentPattern = Regex("\\[download]\\s+(\\d+(?:\\.\\d+)?)%")
         val sizePattern = Regex("\\bof\\s+(~)?\\s*([\\d,]+(?:\\.\\d+)?)\\s*(B|KiB|MiB|GiB|TiB|KB|MB|GB|TB)\\b", RegexOption.IGNORE_CASE)
         val downloadedOnlyPattern = Regex("\\[download]\\s+([\\d,]+(?:\\.\\d+)?)\\s*(B|KiB|MiB|GiB|TiB|KB|MB|GB|TB)\\s+at\\b", RegexOption.IGNORE_CASE)
         val speedPattern = Regex("\\bat\\s+([\\d,]+(?:\\.\\d+)?)\\s*(B|KiB|MiB|GiB|TiB|KB|MB|GB|TB)/s\\b", RegexOption.IGNORE_CASE)
+        val trackCompletedInTimePattern = Regex("\\bin\\s+\\d{1,2}:\\d{2}\\b")
     }
 }

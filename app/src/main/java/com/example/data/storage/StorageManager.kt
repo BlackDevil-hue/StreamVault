@@ -32,7 +32,8 @@ data class CommittedFileResult(
     val finalBytes: Long,
     val sha256: String,
     val detectedHeight: Int?,
-    val detectedDurationMs: Long?
+    val detectedDurationMs: Long?,
+    val detectedArtist: String? = null
 )
 
 @Singleton
@@ -54,9 +55,23 @@ class StorageManager @Inject constructor(
         val directory = getYtDlpWorkingDirectory(downloadId)
         if (!directory.exists()) return 0L
         val mediaExtensions = setOf("mp4", "m4v", "webm", "mkv", "mov", "3gp", "mp3", "m4a", "aac", "ogg", "opus", "flv")
-        return directory.walkTopDown().filter { file ->
-            file.isFile && (file.name.contains(".part", ignoreCase = true) || file.extension.lowercase() in mediaExtensions)
-        }.sumOf { it.length() }
+        val intermediateRegex = Regex(".*\\.f\\d+\\.[^.]+$", RegexOption.IGNORE_CASE)
+        val candidateFiles = directory.walkTopDown().filter { file ->
+            file.isFile &&
+                !file.name.endsWith(".ytdl", ignoreCase = true) &&
+                !file.name.contains(".temp.", ignoreCase = true) &&
+                (file.name.contains(".part", ignoreCase = true) || file.extension.lowercase() in mediaExtensions)
+        }.toList()
+
+        val completedMergedFile = candidateFiles
+            .filter {
+                !it.name.endsWith(".part", ignoreCase = true) &&
+                    !intermediateRegex.matches(it.name) &&
+                    it.extension.lowercase() in mediaExtensions
+            }
+            .maxByOrNull { it.length() }
+
+        return completedMergedFile?.length() ?: candidateFiles.sumOf { it.length() }
     }
 
     fun deleteStagingFile(downloadId: String) {
@@ -143,7 +158,8 @@ class StorageManager @Inject constructor(
                     finalBytes = safFileSize.takeIf { it > 0 } ?: safResultLength(safResult.first),
                     sha256 = sha256,
                     detectedHeight = actualHeight,
-                    detectedDurationMs = probe.durationMs
+                    detectedDurationMs = probe.durationMs,
+                    detectedArtist = probe.artist
                 )
             }
         }
@@ -169,7 +185,8 @@ class StorageManager @Inject constructor(
                     finalBytes = fileSize,
                     sha256 = sha256,
                     detectedHeight = actualHeight,
-                    detectedDurationMs = probe.durationMs
+                    detectedDurationMs = probe.durationMs,
+                    detectedArtist = probe.artist
                 )
             }
         }
@@ -203,7 +220,8 @@ class StorageManager @Inject constructor(
             finalBytes = fileSize,
             sha256 = sha256,
             detectedHeight = actualHeight,
-            detectedDurationMs = probe.durationMs
+            detectedDurationMs = probe.durationMs,
+            detectedArtist = probe.artist
         )
     }
 
@@ -411,8 +429,14 @@ class StorageManager @Inject constructor(
         return try {
             retriever.setDataSource(file.absolutePath)
             val h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
+            val w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
             val d = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
-            LocalMediaMeta(height = h, durationMs = d)
+            val normalizedHeight = if (h != null && h > 0) {
+                VideoQualityTier.fromDimensions(w, h).height.takeIf { it > 0 } ?: h
+            } else {
+                null
+            }
+            LocalMediaMeta(height = normalizedHeight, durationMs = d)
         } catch (_: Exception) {
             LocalMediaMeta(null, null)
         } finally {
@@ -425,13 +449,23 @@ class StorageManager @Inject constructor(
         return try {
             retriever.setDataSource(file.absolutePath)
             val d = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
-            LocalMediaMeta(height = null, durationMs = d)
+            val artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?: retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST)
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+            LocalMediaMeta(height = null, durationMs = d, artist = artist)
         } catch (_: Exception) {
-            LocalMediaMeta(null, null)
+            LocalMediaMeta(null, null, null)
         } finally {
             runCatching { retriever.release() }
         }
     }
 
-    private data class LocalMediaMeta(val height: Int?, val durationMs: Long?)
+    private data class LocalMediaMeta(
+        val height: Int?,
+        val durationMs: Long?,
+        val artist: String? = null
+    )
 }

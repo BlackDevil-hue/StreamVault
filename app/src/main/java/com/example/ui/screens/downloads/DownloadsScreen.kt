@@ -314,8 +314,21 @@ private fun ActiveDownloadItemCard(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        StatusBadge(status = task.status)
-                        QualityBadge(label = task.resolutionLabel)
+                        if (task.status != DownloadStatus.DOWNLOADING) {
+                            StatusBadge(status = task.status)
+                        }
+                        val qualityBadgeLabel = when {
+                            task.isAudioOnly -> task.resolutionLabel
+                            task.resolutionHeight != null && task.resolutionHeight > 0 ->
+                                com.example.domain.model.VideoQualityTier.formatLabelFromHeight(task.resolutionHeight)
+                            task.resolutionLabel.contains("Best available", ignoreCase = true) ->
+                                "HD Quality"
+                            else -> task.resolutionLabel
+                        }
+                        QualityBadge(
+                            label = qualityBadgeLabel,
+                            isHighlighted = task.status == DownloadStatus.DOWNLOADING
+                        )
                         QualityBadge(label = task.format)
                     }
                 }

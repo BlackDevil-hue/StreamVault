@@ -4,20 +4,28 @@ import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
-import com.example.data.local.dao.DownloadDao
 import com.example.data.local.dao.AudioLibraryDao
+import com.example.data.local.dao.AudioLyricsDao
+import com.example.data.local.dao.DownloadDao
+import com.example.data.local.entity.AudioLyricsEntity
 import com.example.data.local.entity.AudioPlaylistEntity
 import com.example.data.local.entity.AudioPlaylistTrackEntity
 import com.example.data.local.entity.DownloadEntity
 
 @Database(
-    entities = [DownloadEntity::class, AudioPlaylistEntity::class, AudioPlaylistTrackEntity::class],
-    version = 4,
+    entities = [
+        DownloadEntity::class,
+        AudioPlaylistEntity::class,
+        AudioPlaylistTrackEntity::class,
+        AudioLyricsEntity::class
+    ],
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun downloadDao(): DownloadDao
     abstract fun audioLibraryDao(): AudioLibraryDao
+    abstract fun audioLyricsDao(): AudioLyricsDao
 
     companion object {
         val MIGRATION_1_2: Migration = object : Migration(1, 2) {
@@ -39,6 +47,23 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_3_4: Migration = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE downloads ADD COLUMN artist TEXT")
+            }
+        }
+
+        val MIGRATION_4_5: Migration = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS audio_lyrics (" +
+                        "downloadId TEXT NOT NULL PRIMARY KEY, " +
+                        "queryTitle TEXT NOT NULL, " +
+                        "queryArtist TEXT, " +
+                        "syncedLrc TEXT, " +
+                        "plainLyrics TEXT, " +
+                        "isInstrumental INTEGER NOT NULL DEFAULT 0, " +
+                        "sourceLabel TEXT, " +
+                        "fetchedAt INTEGER NOT NULL, " +
+                        "FOREIGN KEY(downloadId) REFERENCES downloads(id) ON UPDATE NO ACTION ON DELETE CASCADE)"
+                )
             }
         }
     }

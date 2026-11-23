@@ -11,8 +11,11 @@ import android.os.Build
 import android.os.IBinder
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,12 +39,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
@@ -111,6 +117,7 @@ import androidx.media3.common.util.UnstableApi
 import com.example.audio.AudioPlaybackService
 import com.example.audio.EqualizerCapabilities
 import com.example.domain.model.DownloadTask
+import com.example.domain.model.LyricsUiState
 import com.example.ui.components.EmptyStatePanel
 import com.example.ui.components.FormatUtils
 import com.example.ui.components.MediaThumbnail
@@ -131,6 +138,7 @@ private data class QueueTrackPreview(
 @Composable
 fun AudioLibraryScreen(viewModel: AudioLibraryViewModel = hiltViewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val lyricsState by viewModel.lyricsState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var binder by remember { mutableStateOf<AudioPlaybackService.LocalBinder?>(null) }
     var controller by remember { mutableStateOf<Player?>(null) }
@@ -153,6 +161,8 @@ fun AudioLibraryScreen(viewModel: AudioLibraryViewModel = hiltViewModel()) {
     var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
 
     var showNowPlayingSheet by remember { mutableStateOf(false) }
+    var showLyricsView by remember { mutableStateOf(false) }
+    var showLyricsSearchDialog by remember { mutableStateOf(false) }
     var showEqualizerSheet by remember { mutableStateOf(false) }
     var showCreatePlaylist by remember { mutableStateOf(false) }
     var playlistName by remember { mutableStateOf("") }
@@ -279,6 +289,21 @@ fun AudioLibraryScreen(viewModel: AudioLibraryViewModel = hiltViewModel()) {
         if (uiState.message != null) {
             delay(2500L)
             viewModel.clearMessage()
+        }
+    }
+
+    LaunchedEffect(currentMediaId, currentTitle) {
+        val trackId = currentMediaId
+        val title = currentTitle.orEmpty()
+        if (!trackId.isNullOrBlank() && title.isNotBlank()) {
+            val trackDuration = playbackDuration.takeIf { it > 0L }
+                ?: uiState.tracks.firstOrNull { it.id == trackId }?.durationMs
+            viewModel.loadLyricsForTrack(
+                trackId = trackId,
+                title = title,
+                artist = currentArtist,
+                durationMs = trackDuration
+            )
         }
     }
 
@@ -591,8 +616,32 @@ fun AudioLibraryScreen(viewModel: AudioLibraryViewModel = hiltViewModel()) {
                 seekSeconds = uiState.seekIntervalSeconds,
                 sleepTimerRemainingMs = sleepTimerRemainingMs,
                 equalizerEnabled = uiState.equalizerEnabled,
+                lyricsState = lyricsState,
+                showLyricsView = showLyricsView,
                 queue = queuePreview,
                 currentIndex = currentIndex,
+                onToggleLyricsView = { showLyrics -> showLyricsView = showLyrics },
+                onSeekToMs = { targetMs ->
+                    val clamped = targetMs.coerceAtLeast(0L)
+                    playbackPosition = clamped
+                    controller?.seekTo(clamped)
+                },
+                onRetryLyrics = {
+                    val trackId = currentMediaId
+                    val title = currentTitle.orEmpty()
+                    if (!trackId.isNullOrBlank() && title.isNotBlank()) {
+                        val trackDuration = playbackDuration.takeIf { it > 0L }
+                            ?: uiState.tracks.firstOrNull { it.id == trackId }?.durationMs
+                        viewModel.loadLyricsForTrack(
+                            trackId = trackId,
+                            title = title,
+                            artist = currentArtist,
+                            durationMs = trackDuration,
+                            forceRefresh = true
+                        )
+                    }
+                },
+                onOpenLyricsSearch = { showLyricsSearchDialog = true },
                 onToggleShuffle = {
                     val next = !shuffleEnabled
                     shuffleEnabled = next
@@ -654,6 +703,38 @@ fun AudioLibraryScreen(viewModel: AudioLibraryViewModel = hiltViewModel()) {
                 }
             )
         }
+    }
+
+    if (showLyricsSearchDialog && currentMediaId != null) {
+        val activeState = lyricsState
+        val initialQueryTitle = when (activeState) {
+            is LyricsUiState.Loaded -> activeState.content.queryTitle
+            is LyricsUiState.Unavailable -> activeState.queryTitle
+            else -> currentTitle.orEmpty()
+        }
+        val initialQueryArtist = when (activeState) {
+            is LyricsUiState.Loaded -> activeState.content.queryArtist.orEmpty()
+            is LyricsUiState.Unavailable -> activeState.queryArtist.orEmpty()
+            else -> currentArtist.orEmpty().takeUnless { it.equals("Unknown artist", ignoreCase = true) }.orEmpty()
+        }
+        LyricsSearchDialog(
+            initialTitle = initialQueryTitle,
+            initialArtist = initialQueryArtist,
+            onDismiss = { showLyricsSearchDialog = false },
+            onSearch = { searchTitle, searchArtist ->
+                showLyricsSearchDialog = false
+                showLyricsView = true
+                val trackId = currentMediaId ?: return@LyricsSearchDialog
+                val trackDuration = playbackDuration.takeIf { it > 0L }
+                    ?: uiState.tracks.firstOrNull { it.id == trackId }?.durationMs
+                viewModel.searchLyrics(
+                    trackId = trackId,
+                    customTitle = searchTitle,
+                    customArtist = searchArtist.ifBlank { null },
+                    durationMs = trackDuration
+                )
+            }
+        )
     }
 
     if (showEqualizerSheet) {
@@ -936,8 +1017,14 @@ private fun NowPlayingSheetContent(
     seekSeconds: Int,
     sleepTimerRemainingMs: Long,
     equalizerEnabled: Boolean,
+    lyricsState: LyricsUiState,
+    showLyricsView: Boolean,
     queue: List<QueueTrackPreview>,
     currentIndex: Int,
+    onToggleLyricsView: (Boolean) -> Unit,
+    onSeekToMs: (Long) -> Unit,
+    onRetryLyrics: () -> Unit,
+    onOpenLyricsSearch: () -> Unit,
     onToggleShuffle: () -> Unit,
     onPrevious: () -> Unit,
     onRewind: () -> Unit,
@@ -958,18 +1045,63 @@ private fun NowPlayingSheetContent(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .navigationBarsPadding()
             .padding(horizontal = 22.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        MediaThumbnail(
-            thumbnailUrl = artworkUrl,
-            isAudioOnly = true,
-            contentDescription = title,
-            modifier = Modifier
-                .size(200.dp)
-                .clip(RoundedCornerShape(26.dp))
-        )
+        // Cover / Lyrics mode switcher
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FilterChip(
+                selected = !showLyricsView,
+                onClick = { onToggleLyricsView(false) },
+                label = { Text("Artwork") },
+                leadingIcon = { Icon(Icons.Rounded.Album, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.testTag("now_playing_cover_tab")
+            )
+            FilterChip(
+                selected = showLyricsView,
+                onClick = { onToggleLyricsView(true) },
+                label = { Text("Lyrics") },
+                leadingIcon = { Icon(Icons.Rounded.Lyrics, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.testTag("now_playing_lyrics_tab")
+            )
+        }
+
+        AnimatedContent(
+            targetState = showLyricsView,
+            label = "nowPlayingVisualMode"
+        ) { lyricsVisible ->
+            if (lyricsVisible) {
+                LyricsViewport(
+                    lyricsState = lyricsState,
+                    positionMs = position,
+                    onSeekTo = onSeekToMs,
+                    onRetry = onRetryLyrics,
+                    onOpenSearch = onOpenLyricsSearch
+                )
+            } else {
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    MediaThumbnail(
+                        thumbnailUrl = artworkUrl,
+                        isAudioOnly = true,
+                        contentDescription = title,
+                        modifier = Modifier
+                            .size(192.dp)
+                            .clip(RoundedCornerShape(26.dp))
+                    )
+                }
+            }
+        }
 
         Column(
             modifier = Modifier.fillMaxWidth(),
@@ -997,6 +1129,14 @@ private fun NowPlayingSheetContent(
                     color = MaterialTheme.colorScheme.primary
                 )
             }
+        }
+
+        if (!showLyricsView) {
+            LiveLyricPreviewBanner(
+                lyricsState = lyricsState,
+                positionMs = position,
+                onClick = { onToggleLyricsView(true) }
+            )
         }
 
         // Scrubbing Timeline

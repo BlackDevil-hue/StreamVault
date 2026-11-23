@@ -27,10 +27,30 @@ enum class VideoQualityTier(val height: Int, val label: String) {
             }
         }
 
+        fun fromDimensions(width: Int?, height: Int?): VideoQualityTier {
+            val h = height?.takeIf { it > 0 } ?: return ORIGINAL
+            val w = width?.takeIf { it > 0 } ?: return fromHeight(h)
+            val shortSide = minOf(w, h)
+            val longSide = maxOf(w, h)
+            return when {
+                shortSide >= 2160 || longSide >= 3840 -> P2160
+                shortSide >= 1440 || longSide >= 2560 -> P1440
+                shortSide >= 1080 || longSide >= 1920 -> P1080
+                shortSide >= 720 || longSide >= 1280 -> P720
+                shortSide >= 480 || longSide >= 854 -> P480
+                shortSide >= 360 || longSide >= 640 -> P360
+                shortSide >= 240 || longSide >= 426 -> P240
+                else -> P144
+            }
+        }
+
         fun formatLabelFromHeight(height: Int?): String {
             if (height == null || height <= 0) return ORIGINAL.label
             return fromHeight(height).label
         }
+
+        fun formatLabelFromDimensions(width: Int?, height: Int?): String =
+            fromDimensions(width, height).label
     }
 }
 
@@ -58,6 +78,8 @@ data class VideoAnalysisResult(
     val thumbnailUrl: String? = null,
     val durationMs: Long? = null,
     val author: String? = null,
+    val audioTitle: String? = null,
+    val audioArtist: String? = null,
     val isLive: Boolean = false,
     val streams: List<MediaStreamOption>
 )

@@ -62,6 +62,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.toRoute
 import com.example.R
 import com.example.ui.screens.about.AboutScreen
 import com.example.ui.screens.audio.AudioLibraryScreen
@@ -322,7 +323,9 @@ fun StreamVaultNavHost(
                             },
                             onNavigateToDownloads = { navigateTopLevel(AppRoute.Downloads) },
                             onNavigateToHistory = { navigateTopLevel(AppRoute.History) },
-                            onOpenBrowser = { navController.navigate(AppRoute.Browser) },
+                            onOpenBrowser = { initialUrl ->
+                                navController.navigate(AppRoute.Browser(initialUrl))
+                            },
                             onPlayVideo = { id ->
                                 navController.navigate(AppRoute.Player(id))
                             }
@@ -356,8 +359,10 @@ fun StreamVaultNavHost(
                         AboutScreen()
                     }
 
-                    composable<AppRoute.Browser> {
+                    composable<AppRoute.Browser> { backStackEntry ->
+                        val route = backStackEntry.toRoute<AppRoute.Browser>()
                         BrowserScreen(
+                            initialUrl = route.initialUrl,
                             onBack = { navController.popBackStack() },
                             onSendToDownloader = { url ->
                                 navController.navigate(AppRoute.DownloadOptions(url))

@@ -5,15 +5,19 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.local.dao.AudioLibraryDao
 import com.example.data.local.entity.AudioPlaylistEntity
 import com.example.data.local.entity.AudioPlaylistTrackEntity
+import com.example.data.network.LyricsRepository
 import com.example.domain.model.DownloadTask
 import com.example.domain.model.EqualizerPreset
+import com.example.domain.model.LyricsUiState
 import com.example.domain.repository.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
@@ -49,12 +53,16 @@ data class AudioLibraryUiState(
 @HiltViewModel
 class AudioLibraryViewModel @Inject constructor(
     private val audioLibraryDao: AudioLibraryDao,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val lyricsRepository: LyricsRepository
 ) : ViewModel() {
     private val selectedPlaylistId = MutableStateFlow<String?>(null)
     private val searchQuery = MutableStateFlow("")
     private val sort = MutableStateFlow(AudioSort.RECENT)
     private val message = MutableStateFlow<String?>(null)
+    private val _lyricsState = MutableStateFlow<LyricsUiState>(LyricsUiState.Idle)
+    val lyricsState: StateFlow<LyricsUiState> = _lyricsState.asStateFlow()
+    private var lyricsFetchJob: Job? = null
 
     private val visibleTracks = selectedPlaylistId.flatMapLatest { playlistId ->
         if (playlistId == null) audioLibraryDao.observeAudioDownloads()
@@ -104,6 +112,55 @@ class AudioLibraryViewModel @Inject constructor(
     fun setSearchQuery(value: String) { searchQuery.value = value }
     fun selectSort(value: AudioSort) { sort.value = value }
     fun clearMessage() { message.value = null }
+
+    fun loadLyricsForTrack(
+        trackId: String?,
+        title: String,
+        artist: String?,
+        durationMs: Long?,
+        forceRefresh: Boolean = false
+    ) {
+        if (trackId.isNullOrBlank() || title.isBlank()) {
+            lyricsFetchJob?.cancel()
+            _lyricsState.value = LyricsUiState.Idle
+            return
+        }
+        val current = _lyricsState.value
+        if (!forceRefresh) {
+            if (current is LyricsUiState.Loaded && current.content.trackId == trackId) return
+            if (current is LyricsUiState.Loading && current.trackId == trackId) return
+        }
+        lyricsFetchJob?.cancel()
+        lyricsFetchJob = viewModelScope.launch {
+            _lyricsState.value = LyricsUiState.Loading(trackId = trackId, title = title)
+            _lyricsState.value = lyricsRepository.getLyrics(
+                trackId = trackId,
+                rawTitle = title,
+                rawArtist = artist,
+                durationMs = durationMs,
+                forceRefresh = forceRefresh
+            )
+        }
+    }
+
+    fun searchLyrics(
+        trackId: String,
+        customTitle: String,
+        customArtist: String?,
+        durationMs: Long?
+    ) {
+        if (trackId.isBlank()) return
+        lyricsFetchJob?.cancel()
+        lyricsFetchJob = viewModelScope.launch {
+            _lyricsState.value = LyricsUiState.Loading(trackId = trackId, title = customTitle)
+            _lyricsState.value = lyricsRepository.searchAndSaveLyrics(
+                trackId = trackId,
+                customTitle = customTitle,
+                customArtist = customArtist,
+                durationMs = durationMs
+            )
+        }
+    }
 
     fun createPlaylist(name: String) {
         val normalizedName = name.trim().take(48)

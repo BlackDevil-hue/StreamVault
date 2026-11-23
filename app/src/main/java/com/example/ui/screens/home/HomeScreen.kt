@@ -22,7 +22,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -35,6 +34,7 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -43,18 +43,19 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.PlaylistAdd
@@ -81,7 +82,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -107,20 +107,18 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
-import com.example.ui.components.CompactActiveDownloadCard
 import com.example.ui.components.CompactRecentHistoryRow
 import com.example.ui.components.ErrorBanner
 import com.example.ui.components.IconMedallion
 import com.example.ui.components.VaultAmbientBackground
 import com.example.ui.theme.LocalStreamVaultExtras
-import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen(
     onNavigateToOptions: (String) -> Unit,
     onNavigateToDownloads: () -> Unit,
     onNavigateToHistory: () -> Unit,
-    onOpenBrowser: () -> Unit,
+    onOpenBrowser: (String?) -> Unit,
     onPlayVideo: (String) -> Unit,
     viewModel: HomeViewModel = hiltViewModel()
 ) {
@@ -129,7 +127,6 @@ fun HomeScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val listState = rememberLazyListState()
-    val coroutineScope = rememberCoroutineScope()
     val statusBarTopPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
 
     var hasNotificationPermission by remember { mutableStateOf(hasPostNotificationPermission(context)) }
@@ -365,46 +362,78 @@ fun HomeScreen(
                     }
                 }
 
-                // Quick Access Action Tiles
+                // Quick Access Action Grid
                 item(key = "quick_access") {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val quickActions = listOf(
+                        QuickAccessAction(
+                            label = "Browse",
+                            subtitle = "YouTube & web",
+                            icon = Icons.Rounded.Public,
+                            tint = MaterialTheme.colorScheme.primary,
+                            testTag = "quick_access_browse",
+                            onClick = { onOpenBrowser(null) }
+                        ),
+                        QuickAccessAction(
+                            label = "YT Music",
+                            subtitle = "Songs & albums",
+                            icon = Icons.Rounded.Album,
+                            tint = MaterialTheme.colorScheme.secondary,
+                            testTag = "quick_access_yt_music",
+                            onClick = { onOpenBrowser("https://music.youtube.com") }
+                        ),
+                        QuickAccessAction(
+                            label = "My downloads",
+                            subtitle = if (uiState.activeDownloads.isNotEmpty()) {
+                                "${uiState.activeDownloads.size} active in queue"
+                            } else {
+                                "Queue & progress"
+                            },
+                            icon = Icons.Rounded.Download,
+                            tint = MaterialTheme.colorScheme.tertiary,
+                            testTag = "quick_access_downloads",
+                            onClick = onNavigateToDownloads
+                        ),
+                        QuickAccessAction(
+                            label = "History",
+                            subtitle = "Saved videos",
+                            icon = Icons.Rounded.History,
+                            tint = MaterialTheme.colorScheme.primary,
+                            testTag = "quick_access_history",
+                            onClick = onNavigateToHistory
+                        )
+                    )
+                    val columns = if (tabletLayout) 4 else 2
+
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(
                             text = "Quick access",
                             style = MaterialTheme.typography.titleSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 2.dp)
                         )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            QuickAccessPill(
-                                icon = Icons.Rounded.Public,
-                                label = "Browse",
-                                tint = MaterialTheme.colorScheme.primary,
-                                onClick = onOpenBrowser
-                            )
-                            QuickAccessPill(
-                                icon = Icons.Rounded.PlaylistAdd,
-                                label = "Playlist & batch",
-                                tint = MaterialTheme.colorScheme.secondary,
-                                onClick = {
-                                    coroutineScope.launch { listState.animateScrollToItem(5) }
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            quickActions.chunked(columns).forEach { rowActions ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    rowActions.forEach { action ->
+                                        QuickAccessPill(
+                                            icon = action.icon,
+                                            label = action.label,
+                                            subtitle = action.subtitle,
+                                            tint = action.tint,
+                                            onClick = action.onClick,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag(action.testTag)
+                                        )
+                                    }
+                                    repeat(columns - rowActions.size) {
+                                        Spacer(modifier = Modifier.weight(1f))
+                                    }
                                 }
-                            )
-                            QuickAccessPill(
-                                icon = Icons.Rounded.Download,
-                                label = if (uiState.activeDownloads.isNotEmpty()) {
-                                    "My downloads (${uiState.activeDownloads.size})"
-                                } else {
-                                    "My downloads"
-                                },
-                                tint = MaterialTheme.colorScheme.tertiary,
-                                onClick = onNavigateToDownloads
-                            )
+                            }
                         }
                     }
                 }
@@ -562,13 +591,13 @@ fun HomeScreen(
                                             modifier = Modifier.size(20.dp)
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Analyze Video")
+                                        Text("Analyze")
                                     }
                                 }
                             }
 
                             TextButton(
-                                onClick = onOpenBrowser,
+                                onClick = { onOpenBrowser(null) },
                                 modifier = Modifier
                                     .align(Alignment.CenterHorizontally)
                                     .height(48.dp)
@@ -606,34 +635,6 @@ fun HomeScreen(
                     )
                 }
 
-                // Active Downloading Status Cards
-                if (uiState.activeDownloads.isNotEmpty()) {
-                    item(key = "active_header") {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Active Downloads (${uiState.activeDownloads.size})",
-                                style = MaterialTheme.typography.titleLarge
-                            )
-                            TextButton(
-                                onClick = onNavigateToDownloads,
-                                modifier = Modifier.height(48.dp)
-                            ) {
-                                Text("Manage All")
-                            }
-                        }
-                    }
-                    items(uiState.activeDownloads.take(3), key = { "active_${it.id}" }) { task ->
-                        CompactActiveDownloadCard(
-                            task = task,
-                            onClick = onNavigateToDownloads
-                        )
-                    }
-                }
-
                 // Recent Downloads
                 if (uiState.recentDownloads.isNotEmpty()) {
                     item(key = "recent_header") {
@@ -668,29 +669,42 @@ fun HomeScreen(
     }
 }
 
+private data class QuickAccessAction(
+    val label: String,
+    val subtitle: String,
+    val icon: ImageVector,
+    val tint: Color,
+    val testTag: String,
+    val onClick: () -> Unit
+)
+
 @Composable
 private fun QuickAccessPill(
     icon: ImageVector,
     label: String,
+    subtitle: String,
     tint: Color,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = Modifier.height(48.dp)
+        modifier = modifier.heightIn(min = 56.dp)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Box(
                 modifier = Modifier
-                    .size(28.dp)
-                    .clip(RoundedCornerShape(8.dp))
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(10.dp))
                     .background(tint.copy(alpha = 0.16f)),
                 contentAlignment = Alignment.Center
             ) {
@@ -698,15 +712,24 @@ private fun QuickAccessPill(
                     imageVector = icon,
                     contentDescription = null,
                     tint = tint,
-                    modifier = Modifier.size(16.dp)
+                    modifier = Modifier.size(18.dp)
                 )
             }
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelLarge,
-                maxLines = 1,
-                softWrap = false
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
     }
 }
@@ -954,7 +977,7 @@ private fun HomeHeroHeader(activeDownloadCount: Int) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(168.dp)
+                .height(88.dp)
         ) {
             Image(
                 painter = painterResource(id = R.drawable.img_hero_vault),
@@ -978,7 +1001,7 @@ private fun HomeHeroHeader(activeDownloadCount: Int) {
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = 20.dp, vertical = 18.dp),
-                verticalArrangement = Arrangement.SpaceBetween
+                verticalArrangement = Arrangement.Center
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1046,21 +1069,6 @@ private fun HomeHeroHeader(activeDownloadCount: Int) {
                             )
                         }
                     }
-                }
-
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        text = "Your media, ready for offline.",
-                        style = MaterialTheme.typography.headlineSmall,
-                        color = extras.heroOnScrim
-                    )
-                    Text(
-                        text = "YouTube • Instagram • X • Archive • Direct Media",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = extras.heroOnScrimMuted,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
                 }
             }
         }

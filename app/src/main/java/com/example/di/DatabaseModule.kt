@@ -3,8 +3,9 @@ package com.example.di
 import android.content.Context
 import androidx.room.Room
 import com.example.data.local.AppDatabase
-import com.example.data.local.dao.DownloadDao
 import com.example.data.local.dao.AudioLibraryDao
+import com.example.data.local.dao.AudioLyricsDao
+import com.example.data.local.dao.DownloadDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -24,7 +25,12 @@ object DatabaseModule {
             AppDatabase::class.java,
             "streamvault_db"
         )
-            .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4)
+            .addMigrations(
+                AppDatabase.MIGRATION_1_2,
+                AppDatabase.MIGRATION_2_3,
+                AppDatabase.MIGRATION_3_4,
+                AppDatabase.MIGRATION_4_5
+            )
             .fallbackToDestructiveMigration(dropAllTables = true)
             .build()
 
@@ -35,4 +41,8 @@ object DatabaseModule {
     @Provides
     @Singleton
     fun provideAudioLibraryDao(database: AppDatabase): AudioLibraryDao = database.audioLibraryDao()
+
+    @Provides
+    @Singleton
+    fun provideAudioLyricsDao(database: AppDatabase): AudioLyricsDao = database.audioLyricsDao()
 }

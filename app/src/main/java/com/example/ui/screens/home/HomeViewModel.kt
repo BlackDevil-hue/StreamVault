@@ -151,6 +151,18 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    fun pasteAndAnalyzeFromClipboard(clipboardText: String?) {
+        val extracted = analyzerRepository.extractFirstUrlFromText(clipboardText) ?: clipboardText?.trim()
+        if (!extracted.isNullOrBlank()) {
+            urlInputFlow.value = extracted
+            clipboardUrlFlow.value = null
+            errorFlow.value = null
+            analyzeCurrentUrl()
+        } else {
+            errorFlow.value = "No link found in clipboard."
+        }
+    }
+
     fun analyzeClipboardUrl() {
         val url = clipboardUrlFlow.value ?: return
         urlInputFlow.value = url
@@ -314,12 +326,21 @@ class HomeViewModel @Inject constructor(
         }
         viewModelScope.launch {
             batchFlow.value = batchFlow.value.copy(isQueueingBatch = true, batchMessage = null)
+            val targetHeight = settingsRepository.getCurrentSettings().defaultQuality.targetHeight
             var queued = 0
             selected.forEach { item ->
                 val result = item.result ?: return@forEach
-                val option = result.streams.firstOrNull { it.isHighestQuality }
-                    ?: result.streams.firstOrNull { !it.isAudioOnly }
-                    ?: result.streams.firstOrNull()
+                val videoStreams = result.streams.filter { !it.isAudioOnly }
+                val option = when {
+                    videoStreams.isEmpty() -> result.streams.firstOrNull()
+                    targetHeight == Int.MAX_VALUE ->
+                        videoStreams.firstOrNull { it.isHighestQuality } ?: videoStreams.first()
+                    else ->
+                        videoStreams.filter { (it.resolutionHeight ?: 0) <= targetHeight }
+                            .maxByOrNull { it.resolutionHeight ?: 0 }
+                            ?: videoStreams.minByOrNull { it.resolutionHeight ?: Int.MAX_VALUE }
+                            ?: videoStreams.first()
+                }
                 if (option == null) {
                     batchFlow.value = batchFlow.value.copy(
                         batchItems = batchFlow.value.batchItems.map {

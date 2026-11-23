@@ -527,21 +527,32 @@ fun CompactActiveDownloadCard(
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary
                         )
-                        if (task.status == DownloadStatus.DOWNLOADING && task.speedBytesPerSec > 0) {
-                            Text(
-                                text = "• ${FormatUtils.formatSpeed(task.speedBytesPerSec)}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            if (task.etaSeconds > 0) {
+                        if (task.status == DownloadStatus.DOWNLOADING) {
+                            val qualityBadgeLabel = when {
+                                task.isAudioOnly -> task.resolutionLabel
+                                task.resolutionHeight != null && task.resolutionHeight > 0 ->
+                                    com.example.domain.model.VideoQualityTier.formatLabelFromHeight(task.resolutionHeight)
+                                task.resolutionLabel.contains("Best available", ignoreCase = true) ->
+                                    "HD Quality"
+                                else -> task.resolutionLabel
+                            }
+                            QualityBadge(label = qualityBadgeLabel, isHighlighted = true)
+                            if (task.speedBytesPerSec > 0) {
                                 Text(
-                                    text = "• ETA ${FormatUtils.formatEta(task.etaSeconds)}",
+                                    text = "• ${FormatUtils.formatSpeed(task.speedBytesPerSec)}",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
+                                if (task.etaSeconds > 0) {
+                                    Text(
+                                        text = "• ETA ${FormatUtils.formatEta(task.etaSeconds)}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1
+                                    )
+                                }
                             }
                         } else {
                             StatusBadge(status = task.status)

@@ -147,6 +147,7 @@ private val quickDestinations = listOf(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BrowserScreen(
+    initialUrl: String? = null,
     onBack: () -> Unit,
     onSendToDownloader: (String) -> Unit,
     viewModel: BrowserViewModel = hiltViewModel()
@@ -158,10 +159,15 @@ fun BrowserScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
+    val startUrl = remember(initialUrl) {
+        initialUrl?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+            ?: YOUTUBE_MOBILE_HOME
+    }
+
     val adBlockerEnabled by rememberUpdatedState(browserSettings.browserAdBlockerEnabled)
-    var address by remember { mutableStateOf(YOUTUBE_MOBILE_HOME) }
+    var address by remember(startUrl) { mutableStateOf(startUrl) }
     var isEditingAddress by remember { mutableStateOf(false) }
-    var currentUrl by remember { mutableStateOf(YOUTUBE_MOBILE_HOME) }
+    var currentUrl by remember(startUrl) { mutableStateOf(startUrl) }
     var pageTitle by remember { mutableStateOf("") }
     var progress by remember { mutableIntStateOf(0) }
     var isLoading by remember { mutableStateOf(true) }
@@ -174,7 +180,7 @@ fun BrowserScreen(
     var overflowExpanded by remember { mutableStateOf(false) }
 
     var webViewGeneration by remember { mutableIntStateOf(0) }
-    var initialUrlForInstance by remember { mutableStateOf(YOUTUBE_MOBILE_HOME) }
+    var initialUrlForInstance by remember(startUrl) { mutableStateOf(startUrl) }
     var rendererCrashCount by remember { mutableIntStateOf(0) }
     var rendererCrashedOut by remember { mutableStateOf(false) }
     var useSoftwareLayerFallback by remember { mutableStateOf(false) }

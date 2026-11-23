@@ -101,9 +101,22 @@ class DownloadRepositoryImpl @Inject constructor(
 
         val id = UUID.randomUUID().toString()
         val ext = option.format.lowercase().ifBlank { if (option.isAudioOnly) "m4a" else "mp4" }
+        val effectiveTitle = if (option.isAudioOnly) {
+            analysis.audioTitle?.takeIf { it.isNotBlank() } ?: analysis.title
+        } else {
+            analysis.title
+        }
+        val effectiveArtist = if (option.isAudioOnly && analysis.providerName == "YouTube") {
+            analysis.audioArtist?.takeIf { it.isNotBlank() }
+        } else if (option.isAudioOnly) {
+            analysis.audioArtist?.takeIf { it.isNotBlank() }
+                ?: analysis.author?.takeUnless { analysis.providerName == "Direct Media Link" }
+        } else {
+            analysis.author?.takeUnless { analysis.providerName == "Direct Media Link" }
+        }
         val fileName = overrideFileName?.takeIf { it.isNotBlank() }
             ?: urlValidator.sanitizeFileName(
-                rawTitle = "${analysis.title}_${option.qualityLabel}",
+                rawTitle = if (option.isAudioOnly) effectiveTitle else "${analysis.title}_${option.qualityLabel}",
                 extension = ext
             )
 
@@ -120,8 +133,8 @@ class DownloadRepositoryImpl @Inject constructor(
             sourceUrl = analysis.sourceUrl,
             normalizedUrl = analysis.normalizedUrl,
             streamUrl = option.streamUrl,
-            title = analysis.title,
-            artist = analysis.author?.takeUnless { analysis.providerName == "Direct Media Link" },
+            title = effectiveTitle,
+            artist = effectiveArtist,
             thumbnailUrl = analysis.thumbnailUrl,
             durationMs = analysis.durationMs,
             resolutionLabel = option.qualityLabel,

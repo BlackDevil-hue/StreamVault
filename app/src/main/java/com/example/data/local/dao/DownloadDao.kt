@@ -90,6 +90,9 @@ interface DownloadDao {
     @Query("UPDATE downloads SET bytesDownloaded = 0, totalBytes = 0, reportedProgressPercent = NULL, speedBytesPerSec = 0, etaSeconds = 0 WHERE id = :id")
     suspend fun resetYtDlpProgress(id: String)
 
+    @Query("UPDATE downloads SET resolutionLabel = :resolutionLabel, resolutionHeight = :resolutionHeight WHERE id = :id")
+    suspend fun updateResolvedQuality(id: String, resolutionLabel: String, resolutionHeight: Int)
+
     @Query("UPDATE downloads SET status = :status, speedBytesPerSec = 0, etaSeconds = 0, errorMessage = :errorMessage WHERE id = :id")
     suspend fun updateStatus(id: String, status: String, errorMessage: String? = null)
 
@@ -97,7 +100,7 @@ interface DownloadDao {
     suspend fun updateWorkRequestId(id: String, workId: String?)
 
     @Query(
-        "UPDATE downloads SET status = 'COMPLETED', bytesDownloaded = :finalBytes, totalBytes = :finalBytes, reportedProgressPercent = 100, speedBytesPerSec = 0, etaSeconds = 0, localUri = :localUri, localPath = :localPath, fileName = :fileName, sha256 = :sha256, resolutionLabel = :resolutionLabel, resolutionHeight = :resolutionHeight, format = :format, mimeType = :mimeType, durationMs = COALESCE(:durationMs, durationMs), completedAt = :completedAt, errorMessage = NULL WHERE id = :id"
+        "UPDATE downloads SET status = 'COMPLETED', bytesDownloaded = :finalBytes, totalBytes = :finalBytes, reportedProgressPercent = 100, speedBytesPerSec = 0, etaSeconds = 0, localUri = :localUri, localPath = :localPath, fileName = :fileName, sha256 = :sha256, resolutionLabel = :resolutionLabel, resolutionHeight = :resolutionHeight, format = :format, mimeType = :mimeType, durationMs = COALESCE(:durationMs, durationMs), artist = COALESCE(NULLIF(artist, ''), :artist), completedAt = :completedAt, errorMessage = NULL WHERE id = :id"
     )
     suspend fun markCompleted(
         id: String,
@@ -111,7 +114,8 @@ interface DownloadDao {
         format: String,
         mimeType: String,
         durationMs: Long?,
-        completedAt: Long
+        completedAt: Long,
+        artist: String? = null
     )
 
     @Query("DELETE FROM downloads WHERE id = :id")

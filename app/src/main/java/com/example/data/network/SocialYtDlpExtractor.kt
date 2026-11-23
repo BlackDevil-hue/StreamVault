@@ -69,6 +69,10 @@ class SocialYtDlpExtractor @Inject constructor(
                 else -> "Social media"
             }
 
+            val detectedHeight = info.optInt("height").takeIf { it > 0 }
+            val detectedWidth = info.optInt("width").takeIf { it > 0 }
+            val qualityTier = com.example.domain.model.VideoQualityTier.fromDimensions(detectedWidth, detectedHeight)
+
             ExtractionOutcome.Success(
                 VideoAnalysisResult(
                     sourceUrl = url,
@@ -83,9 +87,13 @@ class SocialYtDlpExtractor @Inject constructor(
                         MediaStreamOption(
                             id = UUID.randomUUID().toString(),
                             streamUrl = "yt-dlp://social/$encodedUrl",
-                            qualityLabel = "Best available quality",
-                            resolutionHeight = info.optInt("height").takeIf { it > 0 },
-                            width = info.optInt("width").takeIf { it > 0 },
+                            qualityLabel = if (qualityTier != com.example.domain.model.VideoQualityTier.ORIGINAL) {
+                                qualityTier.label
+                            } else {
+                                "HD Quality"
+                            },
+                            resolutionHeight = qualityTier.height.takeIf { it > 0 } ?: detectedHeight,
+                            width = detectedWidth,
                             format = "MP4",
                             mimeType = "video/mp4",
                             estimatedBytes = estimatedBytes,

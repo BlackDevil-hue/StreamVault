@@ -9,6 +9,7 @@ import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import com.example.data.local.dao.DownloadDao
 import com.example.data.network.DirectMediaExtractor
+import com.example.data.network.YouTubeStreamSpec
 import com.example.data.network.YoutubeCookieProvider
 import com.example.data.network.YoutubeDlRuntime
 import com.example.data.preferences.UserPreferencesDataStore
@@ -33,6 +34,7 @@ import okhttp3.Request
 import java.io.FileOutputStream
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 @HiltWorker
@@ -109,13 +111,15 @@ class VideoDownloadWorker @AssistedInject constructor(
 
         try {
             if (entity.streamUrl.startsWith("yt-dlp://")) {
+                val parsedYouTube = YouTubeStreamSpec.parse(entity.streamUrl)
                 val isYouTube = entity.streamUrl.startsWith("yt-dlp://youtube/")
-                val isYouTubeAudio = entity.streamUrl.startsWith("yt-dlp://youtube/audio/")
-                val inputUrl = if (isYouTube) {
-                    val videoId = entity.streamUrl.substringAfterLast('/')
-                        .takeIf { it.matches(Regex("[A-Za-z0-9_-]{11}")) }
-                        ?: throw IOException("Invalid YouTube video reference.")
-                    "https://www.youtube.com/watch?v=$videoId"
+                if (isYouTube && parsedYouTube == null) {
+                    throw IOException("Invalid YouTube video reference.")
+                }
+                val isYouTubeAudio = parsedYouTube?.isAudioOnly == true
+                val targetHeight = parsedYouTube?.targetHeight
+                val inputUrl = if (parsedYouTube != null) {
+                    "https://www.youtube.com/watch?v=${parsedYouTube.videoId}"
                 } else {
                     val encodedUrl = entity.streamUrl.substringAfter("yt-dlp://social/")
                         .takeIf { entity.streamUrl.startsWith("yt-dlp://social/") }
@@ -139,6 +143,11 @@ class VideoDownloadWorker @AssistedInject constructor(
                 val request = YoutubeDLRequest(inputUrl).apply {
                     addOption("--no-playlist")
                     addOption("--continue")
+                    addOption("--newline")
+                    addOption("--progress")
+                    addOption("--no-warnings")
+                    addOption("--retries", "5")
+                    addOption("--fragment-retries", "5")
                     if (isYouTube) addOption("--extractor-args", YoutubeDlRuntime.YOUTUBE_EXTRACTOR_ARGS)
                     if (isYouTubeAudio) {
                         // Prefer a dedicated audio track, but allow extraction from a combined
@@ -149,18 +158,51 @@ class VideoDownloadWorker @AssistedInject constructor(
                         addOption("--audio-quality", "320K")
                         addOption("--embed-thumbnail")
                         addOption("--embed-metadata")
-                        // Use track performer metadata only; uploader may be a label or producer.
+                        // Prefer track title and performer metadata for embedded MP3 ID3 tags.
+                        addOption("--parse-metadata", "%(track,alt_title,title)s:%(meta_title)s")
                         addOption("--parse-metadata", "%(artist,artists|)s:%(meta_artist)s")
+                        val metadataArgs = buildList {
+                            val tagTitle = sanitizeFfmpegMetadataValue(entity.title)
+                            if (tagTitle.isNotEmpty()) {
+                                add("-metadata")
+                                add("title=${shlexQuote(tagTitle)}")
+                            }
+                            val tagArtist = entity.artist?.let(::sanitizeFfmpegMetadataValue).orEmpty()
+                            if (tagArtist.isNotEmpty()) {
+                                add("-metadata")
+                                add("artist=${shlexQuote(tagArtist)}")
+                            }
+                        }
+                        if (metadataArgs.isNotEmpty()) {
+                            addOption("--postprocessor-args", "Metadata:${metadataArgs.joinToString(" ")}")
+                        }
                     } else {
-                        addOption("-f", "bestvideo+bestaudio/best")
+                        val videoSelector = if (targetHeight != null && targetHeight > 0) {
+                            "bestvideo[height=$targetHeight][vcodec^=avc1]+bestaudio[acodec^=mp4a.40]/" +
+                                "bestvideo[height=$targetHeight][vcodec^=avc1]+bestaudio[ext=m4a]/" +
+                                "bestvideo[height=$targetHeight][ext=mp4]+bestaudio[ext=m4a]/" +
+                                "bestvideo[height=$targetHeight]+bestaudio/" +
+                                "bestvideo[height<=$targetHeight][vcodec^=avc1]+bestaudio[acodec^=mp4a.40]/" +
+                                "bestvideo[height<=$targetHeight]+bestaudio/" +
+                                "best[height<=$targetHeight]/best"
+                        } else {
+                            "bestvideo+bestaudio/best"
+                        }
+                        addOption("-f", videoSelector)
                         addOption("--merge-output-format", "mp4")
-                        if (isYouTube) addOption("--embed-thumbnail")
                     }
                     addOption("-o", File(tempDir, "%(id)s.%(ext)s").absolutePath)
                 }
                 val cookieFile = youtubeCookieProvider.attachCookies(request, inputUrl)
-                val lastProgressUpdate = AtomicLong(0L)
+                val lastDbUpdate = AtomicLong(0L)
+                val lastForegroundUpdate = AtomicLong(0L)
                 val lastReportedTotal = AtomicLong(entity.totalBytes.coerceAtLeast(0L))
+                val wasFinalizing = AtomicBoolean(false)
+                val qualityResolved = AtomicBoolean(
+                    entity.resolutionHeight != null &&
+                        entity.resolutionHeight > 0 &&
+                        !entity.resolutionLabel.contains("Best available", ignoreCase = true)
+                )
                 val progressTracker = YtDlpProgressTracker(
                     expectedBytes = entity.totalBytes.coerceAtLeast(0L),
                     initialDownloadedBytes = initialYtDlpBytes,
@@ -178,13 +220,37 @@ class VideoDownloadWorker @AssistedInject constructor(
                     YoutubeDL.getInstance().execute(request, downloadId) { progress, etaSeconds, outputLine ->
                         if (isStopped) return@execute
                         val snapshot = progressTracker.update(progress, etaSeconds, outputLine)
+                        val resolvedHeightFromLine = if (!isYouTubeAudio && !qualityResolved.get()) {
+                            (YouTubeStreamSpec.resolveHeightFromFormatSpec(snapshot.detectedFormatSpec) ?: targetHeight)
+                                ?.takeIf { it > 0 }
+                        } else {
+                            null
+                        }
+                        val shouldPersistResolvedQuality = resolvedHeightFromLine != null &&
+                            qualityResolved.compareAndSet(false, true)
                         val now = System.currentTimeMillis()
+                        val enteredFinalizing = snapshot.finalizing && wasFinalizing.compareAndSet(false, true)
                         val discoveredNewTotal = snapshot.totalBytes > 0L && lastReportedTotal.get() != snapshot.totalBytes
-                        if (now - lastProgressUpdate.get() >= 750L || progress >= 100f || snapshot.finalizing || discoveredNewTotal) {
-                            lastProgressUpdate.set(now)
+                        val shouldUpdateDb = now - lastDbUpdate.get() >= 500L ||
+                            enteredFinalizing ||
+                            discoveredNewTotal ||
+                            shouldPersistResolvedQuality
+                        if (shouldUpdateDb) {
+                            lastDbUpdate.set(now)
                             lastReportedTotal.set(snapshot.totalBytes)
+                            val shouldUpdateForeground = now - lastForegroundUpdate.get() >= 1000L || enteredFinalizing
+                            if (shouldUpdateForeground) {
+                                lastForegroundUpdate.set(now)
+                            }
                             runBlocking(Dispatchers.IO) {
                                 if (isStopped) return@runBlocking
+                                if (shouldPersistResolvedQuality && resolvedHeightFromLine != null) {
+                                    downloadDao.updateResolvedQuality(
+                                        id = downloadId,
+                                        resolutionLabel = com.example.domain.model.VideoQualityTier.formatLabelFromHeight(resolvedHeightFromLine),
+                                        resolutionHeight = resolvedHeightFromLine
+                                    )
+                                }
                                 downloadDao.updateYtDlpProgress(
                                     id = downloadId,
                                     bytesDownloaded = snapshot.bytesDownloaded,
@@ -193,25 +259,27 @@ class VideoDownloadWorker @AssistedInject constructor(
                                     percent = snapshot.percent,
                                     eta = snapshot.etaSeconds
                                 )
-                                runCatching {
-                                    setForeground(
-                                        createForegroundInfo(
-                                            notificationId = notificationId,
-                                            title = entity.title,
-                                            percent = snapshot.percent,
-                                            speedText = when {
-                                                snapshot.finalizing -> "Finalizing media…"
-                                                snapshot.totalBytes > 0L && snapshot.speedBytesPerSec > 0L ->
-                                                    "${formatBytesSimple(snapshot.bytesDownloaded)} / ${formatBytesSimple(snapshot.totalBytes)} • ${formatBytesSimple(snapshot.speedBytesPerSec)}/s"
-                                                snapshot.speedBytesPerSec > 0L ->
-                                                    "${formatBytesSimple(snapshot.bytesDownloaded)} • ${formatBytesSimple(snapshot.speedBytesPerSec)}/s"
-                                                snapshot.totalBytes > 0L ->
-                                                    "${formatBytesSimple(snapshot.bytesDownloaded)} / ${formatBytesSimple(snapshot.totalBytes)}"
-                                                else -> "Waiting for stream…"
-                                            },
-                                            indeterminate = snapshot.totalBytes <= 0L && snapshot.percent <= 0
+                                if (shouldUpdateForeground) {
+                                    runCatching {
+                                        setForeground(
+                                            createForegroundInfo(
+                                                notificationId = notificationId,
+                                                title = entity.title,
+                                                percent = snapshot.percent,
+                                                speedText = when {
+                                                    snapshot.finalizing -> "Finalizing media…"
+                                                    snapshot.totalBytes > 0L && snapshot.speedBytesPerSec > 0L ->
+                                                        "${formatBytesSimple(snapshot.bytesDownloaded)} / ${formatBytesSimple(snapshot.totalBytes)} • ${formatBytesSimple(snapshot.speedBytesPerSec)}/s"
+                                                    snapshot.speedBytesPerSec > 0L ->
+                                                        "${formatBytesSimple(snapshot.bytesDownloaded)} • ${formatBytesSimple(snapshot.speedBytesPerSec)}/s"
+                                                    snapshot.totalBytes > 0L ->
+                                                        "${formatBytesSimple(snapshot.bytesDownloaded)} / ${formatBytesSimple(snapshot.totalBytes)}"
+                                                    else -> "Connecting to stream…"
+                                                },
+                                                indeterminate = snapshot.totalBytes <= 0L && snapshot.percent <= 0
+                                            )
                                         )
-                                    )
+                                    }
                                 }
                             }
                         }
@@ -225,17 +293,36 @@ class VideoDownloadWorker @AssistedInject constructor(
                     return@withContext Result.success()
                 }
                 val videoExtensions = setOf("mp4", "m4v", "webm", "mkv", "mov", "3gp", "flv", "ts", "avi")
+                val audioExtensions = setOf("m4a", "webm", "opus", "ogg", "mp3", "aac")
+                val intermediateTrackRegex = Regex(".*\\.f\\d+\\.[^.]+$", RegexOption.IGNORE_CASE)
                 val completedFiles = tempDir.listFiles()
-                    ?.filter { it.isFile && !it.name.endsWith(".part") }
+                    ?.filter {
+                        it.isFile &&
+                            !it.name.endsWith(".part", ignoreCase = true) &&
+                            !it.name.endsWith(".ytdl", ignoreCase = true) &&
+                            !it.name.contains(".temp.", ignoreCase = true)
+                    }
                     .orEmpty()
                 val downloadedFile = if (isYouTubeAudio) {
                     completedFiles.firstOrNull { it.extension.equals("mp3", ignoreCase = true) }
+                        ?: completedFiles.firstOrNull { it.extension.lowercase() in audioExtensions }
                 } else {
-                    completedFiles.filter { it.extension.lowercase() in videoExtensions }
-                        .maxByOrNull { it.length() }
+                    val videoCandidates = completedFiles.filter { it.extension.lowercase() in videoExtensions }
+                    val mergedCandidates = videoCandidates.filterNot { intermediateTrackRegex.matches(it.name) }
+                    if (mergedCandidates.isNotEmpty()) {
+                        mergedCandidates.maxByOrNull { it.length() }
+                    } else {
+                        val hasUnmergedAudioTrack = completedFiles.any {
+                            intermediateTrackRegex.matches(it.name) && it.extension.lowercase() in audioExtensions
+                        }
+                        if (hasUnmergedAudioTrack) {
+                            throw IOException("Failed to merge YouTube video and audio tracks.")
+                        }
+                        videoCandidates.maxByOrNull { it.length() }
+                    }
                 }
-                    ?: throw IOException("yt-dlp did not create a completed video file.")
-                if (downloadedFile.length() <= 0L) throw IOException("Downloaded video is empty.")
+                    ?: throw IOException("yt-dlp did not create a completed media file.")
+                if (downloadedFile.length() <= 0L) throw IOException("Downloaded media file is empty.")
                 if (!storageManager.hasEnoughStorage(downloadedFile.length())) {
                     throw IOException("Not enough free storage space to complete this download.")
                 }
@@ -262,7 +349,11 @@ class VideoDownloadWorker @AssistedInject constructor(
                         else -> entity.mimeType
                     }
                 }
-                downloadedFile.copyTo(stagingFile, overwrite = true)
+                stagingFile.parentFile?.mkdirs()
+                if (stagingFile.exists()) stagingFile.delete()
+                if (!downloadedFile.renameTo(stagingFile)) {
+                    downloadedFile.copyTo(stagingFile, overwrite = true)
+                }
                 tempDir.deleteRecursively()
 
                 val committed = storageManager.commitDownloadedFile(
@@ -274,10 +365,11 @@ class VideoDownloadWorker @AssistedInject constructor(
                     isAudioOnly = entity.isAudioOnly,
                     settings = settings
                 )
+                val resolvedHeight = committed.detectedHeight ?: entity.resolutionHeight
                 val finalResolutionLabel = if (isYouTubeAudio) {
                     "Audio Only (${actualExtension.uppercase()})"
                 } else {
-                    com.example.domain.model.VideoQualityTier.formatLabelFromHeight(committed.detectedHeight)
+                    com.example.domain.model.VideoQualityTier.formatLabelFromHeight(resolvedHeight)
                 }
                 downloadDao.markCompleted(
                     id = downloadId,
@@ -287,11 +379,12 @@ class VideoDownloadWorker @AssistedInject constructor(
                     fileName = committed.finalFileName,
                     sha256 = committed.sha256,
                     resolutionLabel = finalResolutionLabel,
-                    resolutionHeight = committed.detectedHeight,
+                    resolutionHeight = resolvedHeight,
                     format = actualExtension.uppercase(),
                     mimeType = outputMimeType,
-                    durationMs = committed.detectedDurationMs,
-                    completedAt = System.currentTimeMillis()
+                    durationMs = committed.detectedDurationMs ?: entity.durationMs,
+                    completedAt = System.currentTimeMillis(),
+                    artist = committed.detectedArtist
                 )
                 notificationHelper.notifyCompleted(
                     downloadId = downloadId,
@@ -634,6 +727,17 @@ class VideoDownloadWorker @AssistedInject constructor(
         if (mb < 1024) return "%.1f MB".format(mb)
         return "%.2f GB".format(mb / 1024.0)
     }
+
+    private fun sanitizeFfmpegMetadataValue(raw: String): String =
+        raw.replace('\u0000', ' ')
+            .replace('\r', ' ')
+            .replace('\n', ' ')
+            .replace('\t', ' ')
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+    private fun shlexQuote(value: String): String =
+        "'" + value.replace("'", "'\"'\"'") + "'"
 
     companion object {
         const val KEY_DOWNLOAD_ID = "key_download_id"

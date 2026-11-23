@@ -188,4 +188,219 @@ class ExampleUnitTest {
         assertEquals("1", state.playlistStartIndex)
         assertEquals("50", state.playlistEndIndex)
     }
+
+    @Test
+    fun `youtube stream spec builds and parses video, height, legacy, and audio uris`() {
+        val video1080 = com.example.data.network.YouTubeStreamSpec.buildVideoUri("dQw4w9WgXcQ", 1080)
+        assertEquals("yt-dlp://youtube/dQw4w9WgXcQ?height=1080", video1080)
+        val parsed1080 = com.example.data.network.YouTubeStreamSpec.parse(video1080)
+        assertEquals("dQw4w9WgXcQ", parsed1080?.videoId)
+        assertFalse(parsed1080?.isAudioOnly ?: true)
+        assertEquals(1080, parsed1080?.targetHeight)
+
+        val legacyVideo = com.example.data.network.YouTubeStreamSpec.buildVideoUri("dQw4w9WgXcQ")
+        assertEquals("yt-dlp://youtube/dQw4w9WgXcQ", legacyVideo)
+        val parsedLegacy = com.example.data.network.YouTubeStreamSpec.parse(legacyVideo)
+        assertEquals("dQw4w9WgXcQ", parsedLegacy?.videoId)
+        assertFalse(parsedLegacy?.isAudioOnly ?: true)
+        assertEquals(null, parsedLegacy?.targetHeight)
+
+        val audio = com.example.data.network.YouTubeStreamSpec.buildAudioUri("dQw4w9WgXcQ")
+        assertEquals("yt-dlp://youtube/audio/dQw4w9WgXcQ", audio)
+        val parsedAudio = com.example.data.network.YouTubeStreamSpec.parse(audio)
+        assertEquals("dQw4w9WgXcQ", parsedAudio?.videoId)
+        assertTrue(parsedAudio?.isAudioOnly ?: false)
+    }
+
+    @Test
+    fun `youtube extractor exposes per-resolution streams with accurate sizes and duration`() {
+        val app = android.app.Application()
+        val dl = com.example.data.network.YoutubeDlRuntime(app)
+        val extractor = com.example.data.network.YouTubeExtractor(
+            youtubeDlRuntime = dl,
+            youtubeCookieProvider = com.example.data.network.YoutubeCookieProvider(app)
+        )
+        val formats = listOf(
+            com.example.data.network.YouTubeExtractor.RawYouTubeFormat(
+                ext = "m4a", protocol = "https", vcodec = "none", acodec = "mp4a.40.2",
+                width = 0, height = 0, fps = 0.0, tbr = 128.0, abr = 128.0, audioChannels = 2,
+                filesize = 2_000_000L, filesizeApprox = 0L
+            ),
+            com.example.data.network.YouTubeExtractor.RawYouTubeFormat(
+                ext = "m4a", protocol = "https", vcodec = "none", acodec = "mp4a.40.2",
+                width = 0, height = 0, fps = 0.0, tbr = 384.0, abr = 384.0, audioChannels = 6,
+                filesize = 6_000_000L, filesizeApprox = 0L
+            ),
+            com.example.data.network.YouTubeExtractor.RawYouTubeFormat(
+                ext = "mp4", protocol = "https", vcodec = "avc1.4d401f", acodec = "none",
+                width = 1280, height = 720, fps = 30.0, tbr = 1500.0, abr = 0.0, audioChannels = 0,
+                filesize = 22_000_000L, filesizeApprox = 0L
+            ),
+            com.example.data.network.YouTubeExtractor.RawYouTubeFormat(
+                ext = "mp4", protocol = "https", vcodec = "avc1.640028", acodec = "none",
+                width = 1920, height = 1080, fps = 30.0, tbr = 3000.0, abr = 0.0, audioChannels = 0,
+                filesize = 45_000_000L, filesizeApprox = 0L
+            ),
+            com.example.data.network.YouTubeExtractor.RawYouTubeFormat(
+                ext = "webm", protocol = "https", vcodec = "vp9", acodec = "none",
+                width = 3840, height = 2160, fps = 60.0, tbr = 18000.0, abr = 0.0, audioChannels = 0,
+                filesize = 300_000_000L, filesizeApprox = 0L
+            )
+        )
+
+        val streams = extractor.buildStreamOptions("dQw4w9WgXcQ", formats, durationSeconds = 120.5)
+        assertEquals(4, streams.size)
+
+        val p2160 = streams[0]
+        val p1080 = streams[1]
+        val p720 = streams[2]
+        val mp3 = streams[3]
+
+        assertEquals(2160, p2160.resolutionHeight)
+        assertTrue(p2160.isHighestQuality)
+        assertEquals(302_000_000L, p2160.estimatedBytes)
+
+        assertEquals(1080, p1080.resolutionHeight)
+        assertEquals(47_000_000L, p1080.estimatedBytes)
+        assertEquals("yt-dlp://youtube/dQw4w9WgXcQ?height=1080", p1080.streamUrl)
+
+        assertEquals(720, p720.resolutionHeight)
+        assertEquals(24_000_000L, p720.estimatedBytes)
+
+        assertTrue(mp3.isAudioOnly)
+        assertEquals(2_000_000L, mp3.estimatedBytes)
+    }
+
+    @Test
+    fun `yt-dlp tracker ignores stale callbackPercent on track2 destination and non-download lines`() {
+        val tracker = YtDlpProgressTracker(expectedBytes = 90L * 1024 * 1024)
+        tracker.update(-1f, 0L, "[info] dQw4w9WgXcQ: Downloading 1 format(s): 137+140")
+        tracker.update(-1f, 0L, "[download] Destination: /tmp/id.f137.mp4")
+        tracker.update(100f, 0L, "[download] 100% of   80.00MiB in 00:00:20 at 4.00MiB/s")
+
+        // Stale 100f callback on [info] / Destination of Track 2 must NOT trigger finalizing or 100% on Track 2
+        val betweenTracks = tracker.update(100f, 0L, "[info] Switching to audio stream")
+        assertFalse(betweenTracks.finalizing)
+        assertTrue(betweenTracks.percent < 98)
+
+        val track2Dest = tracker.update(100f, 0L, "[download] Destination: /tmp/id.f140.m4a")
+        assertFalse(track2Dest.finalizing)
+        assertTrue(track2Dest.percent < 98)
+
+        val track2Mid = tracker.update(50f, 1L, "[download]  50.0% of   10.00MiB at  2.00MiB/s ETA 00:02")
+        assertEquals(90L * 1024 * 1024, track2Mid.totalBytes)
+        assertEquals(85L * 1024 * 1024, track2Mid.bytesDownloaded)
+        assertEquals(94, track2Mid.percent)
+        assertFalse(track2Mid.finalizing)
+
+        val merging = tracker.update(100f, 0L, "[Merger] Merging formats into \"/tmp/id.mp4\"")
+        assertTrue(merging.finalizing)
+        assertEquals(99, merging.percent)
+        assertEquals(0L, merging.speedBytesPerSec)
+    }
+
+    @Test
+    fun `yt-dlp tracker ignores thumbnail destinations and bloated initial estimates`() {
+        val tracker = YtDlpProgressTracker(expectedBytes = 500L * 1024 * 1024)
+        tracker.update(-1f, 0L, "[info] dQw4w9WgXcQ: Downloading 1 format(s): 137+140")
+        tracker.update(-1f, 0L, "[download] Destination: /tmp/id.f137.mp4")
+        val videoMid = tracker.update(50f, 5L, "[download]  50.0% of   40.00MiB at  4.00MiB/s ETA 00:05")
+        // Bloated 500 MiB estimate must not distort progress once 40 MiB video track is observed
+        assertEquals(40L * 1024 * 1024, videoMid.totalBytes)
+        assertEquals(20L * 1024 * 1024, videoMid.bytesDownloaded)
+        assertEquals(45, videoMid.percent)
+
+        // Thumbnail fetch should not become an extra track
+        tracker.update(-1f, 0L, "[download] Destination: /tmp/id.webp")
+        val thumbLine = tracker.update(100f, 0L, "[download] 100% of 50.00KiB in 00:00:01")
+        assertEquals(40L * 1024 * 1024, thumbLine.totalBytes)
+    }
+
+    @Test
+    fun `dimension quality tier and youtube itag height lookup handle portrait and standard formats`() {
+        assertEquals(VideoQualityTier.P1080, VideoQualityTier.fromDimensions(width = 1080, height = 1920))
+        assertEquals(VideoQualityTier.P1080, VideoQualityTier.fromDimensions(width = 1920, height = 800))
+        assertEquals(VideoQualityTier.P2160, VideoQualityTier.fromDimensions(width = 3840, height = 2160))
+        assertEquals(1080, com.example.data.network.YouTubeStreamSpec.resolveHeightFromFormatSpec("137+140"))
+        assertEquals(2160, com.example.data.network.YouTubeStreamSpec.resolveHeightFromFormatSpec("313+251"))
+        assertEquals(720, com.example.data.network.YouTubeStreamSpec.resolveHeightFromFormatSpec("22"))
+    }
+
+    @Test
+    fun `youtube audio metadata extractor returns clean song title and singer from track artist and description`() {
+        val extractor = com.example.data.network.YouTubeAudioMetadataExtractor
+
+        // 1. Content ID / YouTube Music track + artist present alongside noisy video title
+        val ytMusic = extractor.extract(
+            rawTitle = "Ed Sheeran - Shape of You (Official Music Video) [4K]",
+            rawTrack = "Shape of You",
+            rawArtist = "Ed Sheeran",
+            uploader = "Atlantic Records"
+        )
+        assertEquals("Shape of You", ytMusic.songTitle)
+        assertEquals("Ed Sheeran", ytMusic.songArtist)
+
+        // 2. Bollywood label upload with description credits and pipe-heavy video title
+        val bollywoodLabel = extractor.extract(
+            rawTitle = "Tum Hi Ho (Full Video) | Aashiqui 2 | Aditya Roy Kapur, Shraddha Kapoor",
+            uploader = "T-Series",
+            description = "Presenting the full video of Tum Hi Ho\nSong : Tum Hi Ho\nSinger : Arijit Singh\nMusic : Mithoon"
+        )
+        assertEquals("Tum Hi Ho", bollywoodLabel.songTitle)
+        assertEquals("Arijit Singh", bollywoodLabel.songArtist)
+
+        // 3. Auto-generated Topic upload with "Provided to YouTube by..." description
+        val topicTrack = extractor.extract(
+            rawTitle = "Blinding Lights",
+            uploader = "The Weeknd - Topic",
+            description = "Provided to YouTube by Republic Records\n\nBlinding Lights · The Weeknd\n\nAfter Hours"
+        )
+        assertEquals("Blinding Lights", topicTrack.songTitle)
+        assertEquals("The Weeknd", topicTrack.songArtist)
+
+        // 4. Standard "Artist - Song (Official Video) ft. Guest" without track/artist metadata
+        val dashTitleWithFeat = extractor.extract(
+            rawTitle = "The Chainsmokers - Closer (Lyric Video) ft. Halsey [HD]",
+            uploader = "TheChainsmokersVEVO"
+        )
+        assertEquals("Closer", dashTitleWithFeat.songTitle)
+        assertEquals("The Chainsmokers, Halsey", dashTitleWithFeat.songArtist)
+
+        // 5. Rejects record label uploader as artist when no singer is provided
+        val unknownSingerOnLabel = extractor.extract(
+            rawTitle = "Instrumental Theme (Official Audio)",
+            uploader = "Zee Music Company"
+        )
+        assertEquals("Instrumental Theme", unknownSingerOnLabel.songTitle)
+        assertEquals(null, unknownSingerOnLabel.songArtist)
+    }
+
+    @Test
+    fun `lrc parser parses synced timestamps and tracks active playback line`() {
+        val rawLrc = """
+            [ti:Test Song]
+            [ar:Test Artist]
+            [00:05.50] First line
+            [00:12.00][00:40.250] Repeated chorus line
+            [00:20.00]
+            [00:25.10] Second verse
+        """.trimIndent()
+
+        val lines = com.example.domain.model.LrcParser.parse(rawLrc)
+        assertEquals(4, lines.size)
+        assertEquals(5_500L, lines[0].timestampMs)
+        assertEquals("First line", lines[0].text)
+        assertEquals(12_000L, lines[1].timestampMs)
+        assertEquals("Repeated chorus line", lines[1].text)
+        assertEquals(25_100L, lines[2].timestampMs)
+        assertEquals("Second verse", lines[2].text)
+        assertEquals(40_250L, lines[3].timestampMs)
+        assertEquals("Repeated chorus line", lines[3].text)
+
+        assertEquals(-1, com.example.domain.model.LrcParser.findActiveLineIndex(lines, 1_000L))
+        assertEquals(0, com.example.domain.model.LrcParser.findActiveLineIndex(lines, 6_000L))
+        assertEquals(1, com.example.domain.model.LrcParser.findActiveLineIndex(lines, 12_000L))
+        assertEquals(2, com.example.domain.model.LrcParser.findActiveLineIndex(lines, 30_000L))
+        assertEquals(3, com.example.domain.model.LrcParser.findActiveLineIndex(lines, 42_000L))
+    }
 }

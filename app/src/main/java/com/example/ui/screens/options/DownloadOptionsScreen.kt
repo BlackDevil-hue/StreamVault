@@ -284,10 +284,24 @@ fun DownloadOptionsScreen(
                                         horizontalArrangement = Arrangement.spacedBy(14.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
+                                        val selectedIsAudioOnly = uiState.selectedOption?.isAudioOnly == true ||
+                                            analysis.streams.all { it.isAudioOnly }
+                                        val previewTitle = if (selectedIsAudioOnly) {
+                                            analysis.audioTitle?.takeIf { it.isNotBlank() } ?: analysis.title
+                                        } else {
+                                            analysis.title
+                                        }
+                                        val previewAuthor = if (selectedIsAudioOnly && analysis.providerName == "YouTube") {
+                                            analysis.audioArtist?.takeIf { it.isNotBlank() }
+                                        } else if (selectedIsAudioOnly) {
+                                            analysis.audioArtist?.takeIf { it.isNotBlank() } ?: analysis.author
+                                        } else {
+                                            analysis.author
+                                        }
                                         MediaThumbnail(
                                             thumbnailUrl = analysis.thumbnailUrl,
-                                            isAudioOnly = analysis.streams.all { it.isAudioOnly },
-                                            contentDescription = analysis.title,
+                                            isAudioOnly = selectedIsAudioOnly,
+                                            contentDescription = previewTitle,
                                             durationMs = analysis.durationMs,
                                             modifier = Modifier.size(width = 124.dp, height = 84.dp)
                                         )
@@ -307,14 +321,14 @@ fun DownloadOptionsScreen(
                                                 )
                                             }
                                             Text(
-                                                text = analysis.title,
+                                                text = previewTitle,
                                                 style = MaterialTheme.typography.titleMedium,
                                                 maxLines = 2,
                                                 overflow = TextOverflow.Ellipsis
                                             )
-                                            if (!analysis.author.isNullOrBlank()) {
+                                            if (!previewAuthor.isNullOrBlank()) {
                                                 Text(
-                                                    text = analysis.author,
+                                                    text = previewAuthor,
                                                     style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                     maxLines = 1,

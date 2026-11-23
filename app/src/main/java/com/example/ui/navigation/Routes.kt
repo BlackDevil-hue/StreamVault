@@ -23,7 +23,7 @@ sealed interface AppRoute {
     data object About : AppRoute
 
     @Serializable
-    data object Browser : AppRoute
+    data class Browser(val initialUrl: String? = null) : AppRoute
 
     @Serializable
     data class DownloadOptions(val url: String) : AppRoute
